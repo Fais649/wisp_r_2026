@@ -1,0 +1,4 @@
+interface:
+  display_name: "Note UI Combination Testing"
+  short_description: "Test mixed note content across app surfaces"
+  default_prompt: "Use $note-ui-combinations to visually test note feature combinations across the editor and day view."
