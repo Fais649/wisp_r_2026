@@ -277,6 +277,7 @@ private extension Color {
 
     return ContentView()
         .environment(NoteStore(persistsToDisk: false))
+        .environment(LocationHistory())
 }
 
 #Playground {
@@ -288,4 +289,5 @@ private extension Color {
 
     return ContentView()
         .environment(NoteStore(persistsToDisk: false))
+        .environment(LocationHistory())
 }

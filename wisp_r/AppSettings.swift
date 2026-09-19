@@ -58,6 +58,11 @@ final class AppSettings {
         didSet { defaults.set(eventMinutes, forKey: Key.eventMinutes) }
     }
 
+    /// Whether the app records an on-device trail for each day.
+    var locationTrackingEnabled: Bool {
+        didSet { defaults.set(locationTrackingEnabled, forKey: Key.locationTrackingEnabled) }
+    }
+
     // MARK: Text sizes
 
     var headerTextSize: WisprTextSize {
@@ -118,6 +123,7 @@ final class AppSettings {
 
         let minutes = defaults.integer(forKey: Key.eventMinutes)
         eventMinutes = Self.eventLengths.contains(minutes) ? minutes : 60
+        locationTrackingEnabled = defaults.bool(forKey: Key.locationTrackingEnabled)
 
         headerTextSize = Self.textSize(in: defaults, forKey: Key.headerTextSize)
         editorTextSize = Self.textSize(in: defaults, forKey: Key.editorTextSize)
@@ -152,6 +158,7 @@ final class AppSettings {
         static let theme = "theme"
         static let calendarID = "defaultCalendarID"
         static let eventMinutes = "defaultEventMinutes"
+        static let locationTrackingEnabled = "locationTrackingEnabled"
         static let headerTextSize = "headerTextSize"
         static let editorTextSize = "editorTextSize"
         static let noteTextSize = "noteTextSize"

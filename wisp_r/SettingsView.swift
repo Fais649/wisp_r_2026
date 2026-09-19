@@ -1,3 +1,4 @@
+import CoreLocation
 import EventKit
 import SwiftUI
 
@@ -6,6 +7,7 @@ import SwiftUI
 /// whole thing looks.
 struct SettingsView: View {
     @Environment(NoteStore.self) private var store
+    @Environment(LocationHistory.self) private var locationHistory
     @Environment(\.dismiss) private var dismiss
 
     @Bindable private var settings = AppSettings.shared
@@ -58,6 +60,15 @@ struct SettingsView: View {
                     }
 
                     caption("An opened note starts out larger, so its checklist is easy to tap.")
+
+                    SettingsSection(title: "LOCATION")
+                        .padding(.top, 34)
+
+                    SettingsGroup {
+                        locationTrackingRow
+                    }
+
+                    caption(locationCaption)
 
                     SettingsSection(title: "EVENTS")
                         .padding(.top, 34)
@@ -236,6 +247,42 @@ struct SettingsView: View {
         .frame(height: 52)
     }
 
+    // MARK: - Location
+
+    private var locationTrackingRow: some View {
+        Toggle(
+            "Location silhouettes",
+            isOn: Binding(
+                get: { settings.locationTrackingEnabled },
+                set: { locationHistory.setTrackingEnabled($0) }
+            )
+        )
+        .font(.wispr(18))
+        .foregroundStyle(.white)
+        .tint(.white)
+        .padding(.horizontal, 20)
+        .frame(height: 52)
+    }
+
+    private var locationCaption: String {
+        guard settings.locationTrackingEnabled else {
+            return "Off by default. When enabled, trails stay on this device and are kept for 90 days."
+        }
+
+        switch locationHistory.authorizationStatus {
+        case .authorizedAlways:
+            return "Recording a sparse trail throughout the day. Pull down on a day to reveal its map."
+        case .authorizedWhenInUse:
+            return "Allow Always Location in system Settings to complete trails while Wispr is in the background."
+        case .denied, .restricted:
+            return "Location access is blocked. Allow it in system Settings, or switch this option off."
+        case .notDetermined:
+            return "Choose Allow on the system prompt to start building daily trails."
+        @unknown default:
+            return "Location access is unavailable."
+        }
+    }
+
     // MARK: - Events
 
     private var eventLengthRow: some View {
@@ -370,6 +417,7 @@ private struct SettingsDivider: View {
     return NavigationStack {
         SettingsView()
             .environment(NoteStore(persistsToDisk: false))
+            .environment(LocationHistory())
     }
     .preferredColorScheme(.dark)
 }
@@ -380,6 +428,7 @@ private struct SettingsDivider: View {
     return NavigationStack {
         SettingsView()
             .environment(NoteStore(persistsToDisk: false))
+            .environment(LocationHistory())
     }
     .preferredColorScheme(.dark)
 }

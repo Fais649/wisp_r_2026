@@ -20,5 +20,9 @@
 		<string>GohuFont11NerdFontMono-Regular.ttf</string>
 		<string>GohuFont14NerdFontMono-Regular.ttf</string>
 	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 </dict>
 </plist>

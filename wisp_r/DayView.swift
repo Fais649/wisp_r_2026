@@ -1,4 +1,10 @@
+import MapKit
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 /// The main view: one page per day in a horizontally paging scroll view, each
 /// page a list of that day's notes.
@@ -10,6 +16,7 @@ import SwiftUI
 /// begins a batch selection — and Delete.
 struct DayView: View {
     @Environment(NoteStore.self) private var store
+    @Environment(LocationHistory.self) private var locationHistory
     @Environment(\.dismiss) private var dismiss
 
     /// How many days either side of today can be paged to.
@@ -26,6 +33,7 @@ struct DayView: View {
     private let today = Calendar.current.startOfDay(for: .now)
 
     @State private var visibleDayOffset: Int?
+    @State private var isMapFocused = false
     @State private var editingNote: Note?
     @State private var isSelecting = false
     @State private var selectedNoteIDs: Set<UUID> = []
@@ -76,7 +84,7 @@ struct DayView: View {
             }
         }
         .overlay(alignment: jumpButtonAlignment) {
-            if !isShowingToday, !isSelecting {
+            if !isShowingToday, !isSelecting, !isMapFocused {
                 jumpToTodayButton
             }
         }
@@ -157,33 +165,39 @@ struct DayView: View {
 
     /// One day: its heading, its notes, and room underneath to tap.
     private func page(for pageDay: Date) -> some View {
-        List {
-            header(for: pageDay)
-                .listRowInsets(EdgeInsets(top: 10, leading: 0, bottom: 6, trailing: 0))
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
+        DayLocationSurface(
+            samples: locationHistory.samples(on: pageDay),
+            isFocused: $isMapFocused
+        ) {
+            List {
+                header(for: pageDay)
+                    .listRowInsets(EdgeInsets(top: 10, leading: 0, bottom: 6, trailing: 0))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
 
-            ForEach(store.notes(on: pageDay)) { note in
-                // No insets: the row is exactly the card, so a press and hold
-                // lifts the card itself rather than a wider strip around it.
-                noteRow(note, on: pageDay)
+                ForEach(store.notes(on: pageDay)) { note in
+                    // No insets: the row is exactly the card, so a press and hold
+                    // lifts the card itself rather than a wider strip around it.
+                    noteRow(note, on: pageDay)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+
+                newNoteArea
                     .listRowInsets(EdgeInsets())
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
             }
-
-            newNoteArea
-                .listRowInsets(EdgeInsets())
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
+            .listStyle(.plain)
+            // Gaps between cards come from the list, and the side margins from the
+            // content insets, so neither ends up inside a row.
+            .listRowSpacing(12)
+            .contentMargins(.horizontal, 20, for: .scrollContent)
+            .scrollContentBackground(.hidden)
+            .scrollBounceBehavior(.always, axes: .vertical)
+            .environment(\.defaultMinListRowHeight, 0)
         }
-        .listStyle(.plain)
-        // Gaps between cards come from the list, and the side margins from the
-        // content insets, so neither ends up inside a row.
-        .listRowSpacing(12)
-        .contentMargins(.horizontal, 20, for: .scrollContent)
-        .scrollContentBackground(.hidden)
-        .environment(\.defaultMinListRowHeight, 0)
     }
 
     private var topBar: some View {
@@ -483,6 +497,323 @@ struct DayView: View {
 }
 
 // MARK: - Note card
+
+private struct DayLocationSurface<Content: View>: View {
+    let samples: [LocationSample]
+    @Binding var isFocused: Bool
+    @ViewBuilder let content: Content
+
+    @State private var pullDistance: CGFloat = 0
+
+    private var revealProgress: CGFloat {
+        isFocused ? 1 : min(max(pullDistance / 96, 0), 1)
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let focusedDiameter = min(proxy.size.width - 36, proxy.size.height * 0.62)
+            let restingDiameter = min(proxy.size.width - 72, 300)
+            let viewportDiameter = restingDiameter
+                + (focusedDiameter - restingDiameter) * revealProgress
+            let restingCenterY = restingDiameter * 0.42
+            let focusedCenterY = proxy.size.height * 0.46
+            let mapCenterY = restingCenterY
+                + (focusedCenterY - restingCenterY) * revealProgress
+
+            ZStack(alignment: .top) {
+                if !samples.isEmpty {
+                    DayPathBackdrop(
+                        samples: samples,
+                        revealProgress: revealProgress,
+                        viewportDiameter: viewportDiameter
+                    )
+                        .frame(width: focusedDiameter, height: focusedDiameter)
+                        .position(
+                            x: proxy.size.width / 2,
+                            y: mapCenterY
+                        )
+                        .accessibilityHidden(true)
+                }
+
+                content
+                    .scrollDisabled(isFocused)
+                    .offset(y: isFocused ? max(0, proxy.size.height - 92) : 0)
+                    .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                        max(0, geometry.contentInsets.top - geometry.contentOffset.y)
+                    } action: { _, newValue in
+                        pullDistance = newValue
+                        guard !isFocused, !samples.isEmpty, newValue >= 96 else { return }
+                        withAnimation(.snappy) {
+                            isFocused = true
+                            pullDistance = 0
+                        }
+                    }
+            }
+            .contentShape(Rectangle())
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 18)
+                    .onEnded { value in
+                        let movement = value.translation
+                        guard isFocused,
+                              movement.height < -64,
+                              abs(movement.height) > abs(movement.width) * 1.15
+                        else { return }
+
+                        withAnimation(.snappy) {
+                            isFocused = false
+                            pullDistance = 0
+                        }
+                    }
+            )
+        }
+        .clipped()
+        .animation(.snappy, value: isFocused)
+    }
+}
+
+private struct DayPathBackdrop: View {
+    let samples: [LocationSample]
+    let revealProgress: CGFloat
+    let viewportDiameter: CGFloat
+
+    private var theme: WisprThemeKind { AppSettings.shared.theme }
+
+    private var mapInk: Color {
+        switch theme {
+        case .standard: Color(red: 0.78, green: 0.80, blue: 0.84)
+        case .legacy: .white
+        }
+    }
+
+    private var mapBase: Color {
+        switch theme {
+        case .standard: Color(red: 0.16, green: 0.16, blue: 0.18)
+        case .legacy: .black
+        }
+    }
+
+    private var coordinates: [CLLocationCoordinate2D] {
+        samples.map(\.coordinate)
+    }
+
+    private var region: MKCoordinateRegion {
+        let latitudes = samples.map(\.latitude)
+        let longitudes = samples.map(\.longitude)
+        let minimumLatitude = latitudes.min() ?? 0
+        let maximumLatitude = latitudes.max() ?? 0
+        let minimumLongitude = longitudes.min() ?? 0
+        let maximumLongitude = longitudes.max() ?? 0
+
+        return MKCoordinateRegion(
+            center: CLLocationCoordinate2D(
+                latitude: (minimumLatitude + maximumLatitude) / 2,
+                longitude: (minimumLongitude + maximumLongitude) / 2
+            ),
+            span: MKCoordinateSpan(
+                latitudeDelta: max((maximumLatitude - minimumLatitude) * 2.2, 0.012),
+                longitudeDelta: max((maximumLongitude - minimumLongitude) * 2.2, 0.012)
+            )
+        )
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                mapBase
+
+                DayMapSnapshot(region: region)
+                    .blur(radius: 5 * (1 - revealProgress))
+                    .saturation(0)
+                    .contrast(1.1 + revealProgress * 0.18)
+                    .brightness(-0.05 + revealProgress * 0.05)
+                    .colorMultiply(mapInk)
+                    .opacity(0.72 + revealProgress * 0.23)
+
+                mapBase.opacity(0.2 - revealProgress * 0.15)
+
+                RouteSilhouette(coordinates: coordinates, region: region)
+                    .stroke(
+                        mapInk.opacity(0.24 + revealProgress * 0.34),
+                        style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round)
+                    )
+                    .blur(radius: 7)
+
+                RouteSilhouette(coordinates: coordinates, region: region)
+                    .stroke(
+                        mapInk.opacity(0.42 + revealProgress * 0.5),
+                        style: StrokeStyle(lineWidth: 2.25, lineCap: .round, lineJoin: .round)
+                    )
+                    .blur(radius: 5 * (1 - revealProgress))
+
+                if let coordinate = coordinates.last {
+                    LocationMapDot(ink: mapInk, base: mapBase)
+                        .blur(radius: 5 * (1 - revealProgress))
+                        .position(project(coordinate, in: proxy.size))
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+        .mask {
+            RadialGradient(
+                stops: [
+                    .init(color: .white, location: 0),
+                    .init(color: .white, location: 0.68),
+                    .init(color: .white.opacity(0.55), location: 0.84),
+                    .init(color: .clear, location: 1)
+                ],
+                center: .center,
+                startRadius: 0,
+                endRadius: viewportDiameter / 2
+            )
+            .frame(width: viewportDiameter, height: viewportDiameter)
+        }
+        .overlay {
+            Circle()
+                .stroke(mapInk.opacity(0.08), lineWidth: 1)
+                .blur(radius: 0.5)
+                .frame(width: viewportDiameter, height: viewportDiameter)
+        }
+        .shadow(color: mapInk.opacity(0.12 * revealProgress), radius: 18)
+        .allowsHitTesting(false)
+    }
+
+    private func project(_ coordinate: CLLocationCoordinate2D, in size: CGSize) -> CGPoint {
+        let latitudeDelta = max(region.span.latitudeDelta, 0.000_001)
+        let longitudeDelta = max(region.span.longitudeDelta, 0.000_001)
+        let minimumLatitude = region.center.latitude - latitudeDelta / 2
+        let minimumLongitude = region.center.longitude - longitudeDelta / 2
+
+        return CGPoint(
+            x: ((coordinate.longitude - minimumLongitude) / longitudeDelta) * size.width,
+            y: (1 - (coordinate.latitude - minimumLatitude) / latitudeDelta) * size.height
+        )
+    }
+}
+
+private struct DayMapSnapshot: View {
+    let region: MKCoordinateRegion
+
+    @State private var snapshot: MKMapSnapshotter.Snapshot?
+
+    var body: some View {
+        ZStack {
+            // A concrete surface keeps this view alive while MapKit renders.
+            // An empty conditional can collapse before its task returns.
+            Color.clear
+
+            if let snapshot {
+                snapshotImage(snapshot)
+                    .resizable()
+                    .scaledToFill()
+            }
+        }
+        .clipped()
+        .task(id: requestID) {
+            snapshot = await makeSnapshot()
+        }
+    }
+
+    @ViewBuilder
+    private func snapshotImage(_ snapshot: MKMapSnapshotter.Snapshot) -> Image {
+        #if canImport(UIKit)
+        Image(uiImage: snapshot.image)
+        #elseif canImport(AppKit)
+        Image(nsImage: snapshot.image)
+        #endif
+    }
+
+    private var requestID: String {
+        [
+            region.center.latitude,
+            region.center.longitude,
+            region.span.latitudeDelta,
+            region.span.longitudeDelta
+        ]
+        .map { $0.formatted(.number.precision(.fractionLength(6))) }
+        .joined(separator: ":")
+    }
+
+    private func makeSnapshot() async -> MKMapSnapshotter.Snapshot? {
+        let options = MKMapSnapshotter.Options()
+        options.region = region
+        options.size = CGSize(width: 768, height: 768)
+
+        let configuration = MKStandardMapConfiguration(
+            elevationStyle: .flat,
+            emphasisStyle: .muted
+        )
+        configuration.pointOfInterestFilter = .excludingAll
+        configuration.showsTraffic = false
+        options.preferredConfiguration = configuration
+
+        #if canImport(UIKit)
+        options.scale = 2
+        options.traitCollection = UITraitCollection(userInterfaceStyle: .dark)
+        #elseif canImport(AppKit)
+        options.appearance = NSAppearance(named: .darkAqua)
+        #endif
+
+        return await withCheckedContinuation { continuation in
+            MKMapSnapshotter(options: options).start { snapshot, _ in
+                continuation.resume(returning: snapshot)
+            }
+        }
+    }
+}
+
+private struct LocationMapDot: View {
+    let ink: Color
+    let base: Color
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(base.opacity(0.92))
+                .frame(width: 22, height: 22)
+                .overlay { Circle().stroke(ink.opacity(0.62), lineWidth: 1) }
+                .shadow(color: ink.opacity(0.35), radius: 8)
+
+            Circle()
+                .fill(ink)
+                .frame(width: 6, height: 6)
+        }
+    }
+}
+
+private struct RouteSilhouette: Shape {
+    let coordinates: [CLLocationCoordinate2D]
+    let region: MKCoordinateRegion
+
+    func path(in rect: CGRect) -> Path {
+        guard !coordinates.isEmpty else { return Path() }
+
+        let latitudeRange = max(region.span.latitudeDelta, 0.000_001)
+        let longitudeRange = max(region.span.longitudeDelta, 0.000_001)
+        let minimumLatitude = region.center.latitude - latitudeRange / 2
+        let minimumLongitude = region.center.longitude - longitudeRange / 2
+
+        func point(for coordinate: CLLocationCoordinate2D) -> CGPoint {
+            let normalizedX = (coordinate.longitude - minimumLongitude) / longitudeRange
+            let normalizedY = (coordinate.latitude - minimumLatitude) / latitudeRange
+            return CGPoint(
+                x: rect.minX + normalizedX * rect.width,
+                y: rect.maxY - normalizedY * rect.height
+            )
+        }
+
+        var path = Path()
+        path.move(to: point(for: coordinates[0]))
+        for coordinate in coordinates.dropFirst() {
+            path.addLine(to: point(for: coordinate))
+        }
+
+        if coordinates.count == 1 {
+            let center = point(for: coordinates[0])
+            path.addEllipse(in: CGRect(x: center.x - 3, y: center.y - 3, width: 6, height: 6))
+        }
+        return path
+    }
+}
 
 struct NoteCard: View {
     let note: Note
@@ -892,6 +1223,7 @@ extension NoteStore {
 
     return DayView()
         .environment(NoteStore.previewSeeded())
+        .environment(LocationHistory())
         .preferredColorScheme(.dark)
 }
 
@@ -907,6 +1239,7 @@ extension NoteStore {
 
     return DayView()
         .environment(store)
+        .environment(LocationHistory())
         .preferredColorScheme(.dark)
 }
 
@@ -928,6 +1261,7 @@ extension NoteStore {
 
     return DayView()
         .environment(store)
+        .environment(LocationHistory())
         .preferredColorScheme(.dark)
 }
 
@@ -936,5 +1270,6 @@ extension NoteStore {
 
     return DayView()
         .environment(NoteStore.previewSeeded())
+        .environment(LocationHistory())
         .preferredColorScheme(.dark)
 }
