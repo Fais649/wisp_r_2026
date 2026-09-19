@@ -7,11 +7,16 @@ enum WisprScreen: Hashable {
     /// A day in the day view; `nil` means today.
     case day(Date?)
     case moment(Moment)
+    case settings
 }
 
 struct ContentView: View {
     /// Starts on the day view; the back button reveals the menu behind it.
     @State private var path: [WisprScreen] = [.day(nil)]
+
+    /// Set when the widget's plus is tapped, so today opens straight into a
+    /// blank note. A fresh value each time, so asking twice works twice.
+    @State private var newNoteRequest: UUID?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -19,17 +24,35 @@ struct ContentView: View {
                 .navigationDestination(for: WisprScreen.self) { screen in
                     switch screen {
                     case .day(let day):
-                        DayView(initialDay: day, backTitle: backTitle(forDayAfter: screen))
+                        DayView(
+                            initialDay: day,
+                            backTitle: backTitle(forDayAfter: screen),
+                            newNoteRequest: $newNoteRequest
+                        )
 
                     case .moment(let moment):
                         MomentTimelineView(moment: moment)
+
+                    case .settings:
+                        SettingsView()
                     }
                 }
         }
         .preferredColorScheme(.dark)
         .onOpenURL { url in
-            guard url.scheme == "wispr", url.host == "today" else { return }
-            path = [.day(nil)]
+            guard url.scheme == "wispr" else { return }
+
+            switch url.host {
+            case "today":
+                path = [.day(nil)]
+
+            case "new":
+                path = [.day(nil)]
+                newNoteRequest = UUID()
+
+            default:
+                break
+            }
         }
     }
 
@@ -38,7 +61,7 @@ struct ContentView: View {
     private func backTitle(forDayAfter screen: WisprScreen) -> String {
         guard let index = path.firstIndex(of: screen), index > 0,
               case .moment(let moment) = path[index - 1]
-        else { return "Wispr" }
+        else { return AppSettings.shared.displayTitle }
 
         return moment.title
     }
@@ -86,8 +109,11 @@ struct ContentView: View {
                 }
                 .padding(.top, 13)
 
-                MenuRow(title: "Settings", icon: "gearshape.fill")
-                    .padding(.top, 58)
+                NavigationLink(value: WisprScreen.settings) {
+                    MenuRow(title: "Settings", icon: "gearshape.fill")
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 58)
 
                 Spacer(minLength: 0)
             }
@@ -112,8 +138,8 @@ private struct HeaderView: View {
             LogoMark()
                 .frame(width: 22, height: 22)
 
-            Text("Wispr")
-                .font(.system(size: 21, weight: .medium))
+            Text(AppSettings.shared.displayTitle)
+                .font(.wispr(21, weight: .medium, role: .header))
                 .foregroundStyle(.white)
         }
     }
@@ -159,7 +185,7 @@ private struct SectionHeader: View {
                     .kerning(0.6)
             }
         }
-        .font(.system(size: 12, weight: .medium))
+        .font(.wispr(12, weight: .medium))
         .foregroundStyle(Color.white.opacity(0.42))
         .padding(.horizontal, 40)
     }
@@ -174,8 +200,7 @@ private struct CardGroup<Content: View>: View {
         VStack(spacing: 0) {
             content
         }
-        .background(Color.white.opacity(0.05))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .wisprCardBackground()
         .padding(.horizontal, 20)
     }
 }
@@ -183,7 +208,7 @@ private struct CardGroup<Content: View>: View {
 private struct RowDivider: View {
     var body: some View {
         Rectangle()
-            .fill(Color.white.opacity(0.08))
+            .fill(Color.wisprSeparator)
             .frame(height: 1)
             .padding(.leading, 20)
     }
@@ -197,11 +222,11 @@ private struct MenuRow: View {
     var body: some View {
         HStack {
             Text(title)
-                .font(.system(size: 18))
+                .font(.wispr(18))
                 .foregroundStyle(.white)
             Spacer()
             Image(systemName: icon)
-                .font(.system(size: 17, weight: iconWeight))
+                .font(.wispr(17, weight: iconWeight))
                 .foregroundStyle(.white)
                 // Decoration only; the title names the row. Left visible, some
                 // symbols carry traits of their own — `checkmark.square` reads
@@ -223,12 +248,12 @@ private struct TimelineRow: View {
     var body: some View {
         HStack {
             Text(title)
-                .font(.system(size: 18))
+                .font(.wispr(18))
                 .foregroundStyle(.white)
             Spacer()
             if showsChevron {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.wispr(16, weight: .semibold))
                     .foregroundStyle(Color.white.opacity(0.85))
             }
         }
@@ -248,10 +273,19 @@ private extension Color {
 }
 
 #Preview {
-    ContentView()
+    AppSettings.preview()
+
+    return ContentView()
         .environment(NoteStore(persistsToDisk: false))
 }
 
 #Playground {
     _ = 1 + 2
+}
+
+#Preview("Legacy theme") {
+    AppSettings.preview(theme: .legacy)
+
+    return ContentView()
+        .environment(NoteStore(persistsToDisk: false))
 }

@@ -56,7 +56,7 @@ struct VoiceMemoView: View {
                 TranscriptView(transcript: transcript, isExpanded: $isTranscriptExpanded)
             } else if let transcriptionError {
                 Text(transcriptionError)
-                    .font(.system(size: 12))
+                    .font(.wispr(12))
                     .foregroundStyle(Color.white.opacity(0.5))
             }
         }
@@ -79,7 +79,7 @@ struct VoiceMemoView: View {
                 player.toggle(attachment)
             } label: {
                 Image(systemName: player.isPlaying(attachment) ? "pause.fill" : "play.fill")
-                    .font(.system(size: 15))
+                    .font(.wispr(15))
                     .foregroundStyle(.black)
                     .frame(width: 34, height: 34)
                     .background(.white, in: Circle())
@@ -92,7 +92,7 @@ struct VoiceMemoView: View {
                 .frame(maxWidth: .infinity)
 
             Text(timeLabel)
-                .font(.system(size: 13, weight: .medium))
+                .font(.wispr(13, weight: .medium))
                 .monospacedDigit()
                 .foregroundStyle(Color.white.opacity(0.7))
 
@@ -100,7 +100,7 @@ struct VoiceMemoView: View {
                 player.reset(attachment)
             } label: {
                 Image(systemName: "arrow.counterclockwise")
-                    .font(.system(size: 14))
+                    .font(.wispr(14))
                     .foregroundStyle(Color.white.opacity(0.7))
             }
             .buttonStyle(.plain)
@@ -124,7 +124,7 @@ struct VoiceMemoView: View {
         } else if attachment.transcript == nil {
             Button(action: onTranscribe) {
                 Image(systemName: "text.viewfinder")
-                    .font(.system(size: 15))
+                    .font(.wispr(15))
                     .foregroundStyle(Color.white.opacity(0.7))
             }
             .buttonStyle(.plain)
@@ -142,7 +142,7 @@ private struct TranscriptView: View {
     let transcript: String
     @Binding var isExpanded: Bool
 
-    private static let font = Font.system(size: 14)
+    private static let font = Font.wispr(14)
     private static let collapsedLineLimit = 2
 
     @State private var fullHeight: CGFloat = 0
@@ -177,11 +177,11 @@ private struct TranscriptView: View {
         } label: {
             HStack(spacing: 6) {
                 Text("Transcript")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.wispr(12, weight: .semibold))
                     .foregroundStyle(Color.wisprSecondaryText)
 
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.wispr(10, weight: .semibold))
                     .foregroundStyle(Color.wisprSecondaryText)
                     .rotationEffect(.degrees(isExpanded ? 0 : -90))
 

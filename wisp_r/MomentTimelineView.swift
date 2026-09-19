@@ -51,7 +51,12 @@ enum Moment: String, Hashable, CaseIterable, Identifiable {
     /// written in.
     func ordered(_ notes: [Note]) -> [Note] {
         guard self == .events else { return notes }
-        return notes.sorted { ($0.schedule?.startMinute ?? 0) < ($1.schedule?.startMinute ?? 0) }
+        return notes.sorted { lhs, rhs in
+            let leftAllDay = lhs.schedule?.isAllDay == true
+            let rightAllDay = rhs.schedule?.isAllDay == true
+            if leftAllDay != rightAllDay { return leftAllDay }
+            return (lhs.schedule?.startMinute ?? 0) < (rhs.schedule?.startMinute ?? 0)
+        }
     }
 }
 
@@ -89,12 +94,13 @@ struct MomentTimelineView: View {
     /// them, so there is something to open on and a mark between past and future.
     private var sections: [DaySection] {
         var notesByDay: [Date: [Note]] = [today: []]
+        var days = Set(store.daysHoldingNotes())
+        days.insert(today)
 
-        for (key, notes) in store.notesByDay {
-            guard let day = NoteStore.date(forKey: key) else { continue }
-            let matching = notes.filter(moment.matches)
-            guard !matching.isEmpty else { continue }
-            notesByDay[day] = moment.ordered(matching)
+        for day in days {
+            let matching = store.notes(on: day).filter(moment.matches)
+            if matching.isEmpty, !Calendar.current.isDate(day, inSameDayAs: today) { continue }
+            notesByDay[Calendar.current.startOfDay(for: day)] = moment.ordered(matching)
         }
 
         return notesByDay
@@ -146,9 +152,9 @@ struct MomentTimelineView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 17, weight: .semibold))
-                    Text("Wispr")
-                        .font(.system(size: 17))
+                        .font(.wispr(17, weight: .semibold))
+                    Text(AppSettings.shared.displayTitle)
+                        .font(.wispr(17))
                 }
                 .foregroundStyle(Color.white.opacity(0.6))
             }
@@ -160,7 +166,7 @@ struct MomentTimelineView: View {
                 Text(moment.title)
                 Image(systemName: moment.icon)
             }
-            .font(.system(size: 17))
+            .font(.wispr(17))
             .foregroundStyle(.white)
         }
     }
@@ -217,18 +223,18 @@ struct MomentTimelineView: View {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(DayFormat.relativeTitle(for: day))
-                            .font(.system(size: 20, weight: .semibold))
+                            .font(.wispr(20, weight: .semibold))
                             .foregroundStyle(.white)
 
                         Text(DayFormat.dateSubtitle(for: day))
-                            .font(.system(size: 13))
+                            .font(.wispr(13))
                             .foregroundStyle(Color.wisprSecondaryText)
                     }
 
                     Spacer(minLength: 0)
 
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.wispr(13, weight: .semibold))
                         .foregroundStyle(Color.wisprSecondaryText)
                 }
 
@@ -245,7 +251,7 @@ struct MomentTimelineView: View {
 
     private var emptyDay: some View {
         Text("No \(moment.title.lowercased()) today")
-            .font(.system(size: 15))
+            .font(.wispr(15))
             .foregroundStyle(Color.wisprSecondaryText)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -253,15 +259,16 @@ struct MomentTimelineView: View {
     // MARK: - Notes
 
     private func card(for note: Note, on day: Date) -> some View {
-        NoteCard(
+        let stored = store.storedDay(of: note.id) ?? day
+        return NoteCard(
             note: note,
-            day: day,
+            day: stored,
             onToggle: { block in
                 withAnimation(.snappy) {
                     store.toggleChecklistItem(block.id, inNote: note.id, on: day)
                 }
             },
-            onEdit: { editRequest = NoteOnDay(note: note, day: day) },
+            onEdit: { editRequest = NoteOnDay(note: note, day: stored) },
             onOpenAttachment: { openAttachment($0, in: note) },
             transcriptExpansion: { transcriptExpansion(for: $0) },
             onTranscribe: { transcribe($0, in: note, on: day) },

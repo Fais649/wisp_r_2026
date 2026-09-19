@@ -23,14 +23,12 @@
 /* Begin PBXCopyFilesBuildPhase section */
 		000000000000000280000000 /* Embed Foundation Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
 			dstPath = "";
-			dstSubfolderSpec = 13;
+			dstSubfolder = PlugIns;
 			files = (
 				000000000000000230000000 /* WisprWidget.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
 
@@ -40,19 +38,19 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		0000000000000002C0000000 /* Exceptions for "wisp_r" folder in "wisp_r" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = 000000000000000100000000 /* wisp_r */;
-		};
 		0000000000000002A0000000 /* Exceptions for "WisprWidget" folder in "WisprWidget" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
 			);
 			target = 000000000000000200000000 /* WisprWidget */;
+		};
+		0000000000000002C0000000 /* Exceptions for "wisp_r" folder in "wisp_r" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 000000000000000100000000 /* wisp_r */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -83,10 +81,8 @@
 		};
 		000000000000000250000000 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
@@ -123,13 +119,13 @@
 			);
 			buildRules = (
 			);
+			dependencies = (
+				0000000000000002B0000000 /* PBXTargetDependency */,
+			);
 			fileSystemSynchronizedGroups = (
 				000000000000000000000010 /* wisp_r */,
 			);
 			name = wisp_r;
-			dependencies = (
-				0000000000000002B0000000 /* PBXTargetDependency */,
-			);
 			productName = MyApp;
 			productReference = 000000000000000000000120 /* wisp_r.app */;
 			productType = "com.apple.product-type.application";
@@ -144,14 +140,10 @@
 			);
 			buildRules = (
 			);
-			dependencies = (
-			);
 			fileSystemSynchronizedGroups = (
 				000000000000000210000000 /* WisprWidget */,
 			);
 			name = WisprWidget;
-			packageProductDependencies = (
-			);
 			productName = WisprWidget;
 			productReference = 000000000000000220000000 /* WisprWidget.appex */;
 			productType = "com.apple.product-type.app-extension";
@@ -202,10 +194,8 @@
 		};
 		000000000000000270000000 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
@@ -217,19 +207,15 @@
 		};
 		000000000000000240000000 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
 		0000000000000002B0000000 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			platformFilters = (
-				ios,
-			);
+			platformFilter = ios;
 			target = 000000000000000200000000 /* WisprWidget */;
 			targetProxy = 000000000000000290000000 /* PBXContainerItemProxy */;
 		};
@@ -372,6 +358,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = wisp_r/wisp_r.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = wisp_r/wisp_r.macos.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 28PK8QN487;
@@ -382,6 +369,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = wisp_r/Info.plist;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Wispr adds the events you create to your default calendar and brings that calendar's events into the app.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Wispr uses the camera to scan documents and take photos and videos for your notes.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Wispr records audio for voice memos and when you capture a video for a note.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
@@ -417,6 +405,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = wisp_r/wisp_r.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = wisp_r/wisp_r.macos.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 28PK8QN487;
@@ -427,6 +416,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = wisp_r/Info.plist;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Wispr adds the events you create to your default calendar and brings that calendar's events into the app.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Wispr uses the camera to scan documents and take photos and videos for your notes.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Wispr records audio for voice memos and when you capture a video for a note.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
@@ -547,7 +537,6 @@
 				000000000000000261000000 /* Debug configuration for PBXNativeTarget "WisprWidget" */,
 				000000000000000262000000 /* Release configuration for PBXNativeTarget "WisprWidget" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */

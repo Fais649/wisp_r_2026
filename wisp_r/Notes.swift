@@ -34,41 +34,122 @@ struct NoteBlock: Identifiable, Equatable {
     }
 }
 
-/// When a note happens: either a span of time on its day, making it a calendar
-/// event, or a single time the note is due by.
+/// When a note happens: either a span of time, making it a calendar event, or a
+/// single time the note is due by.
 ///
-/// Times are minutes from midnight rather than dates, so a note keeps its time
-/// when it is moved to another day.
+/// Times are minutes from midnight on the day the note is stored, so moving the
+/// note keeps its time of day. An event may run past that day (`endDayOffset`)
+/// and may fill whole days with no time of day (`isAllDay`).
 struct NoteSchedule: Equatable, Codable {
     /// The latest a note can be due: 9 PM.
     static let latestDueMinute = 21 * 60
 
     var startMinute: Int
-    /// `nil` when the note is simply due by `startMinute` rather than filling a span.
+    /// `nil` when the note is simply due by `startMinute`, or when it is all day.
     var endMinute: Int?
+    /// Midnights between the note's day and the day the event ends. Zero means
+    /// it starts and ends on the same day.
+    var endDayOffset: Int
+    var isAllDay: Bool
 
-    var isEvent: Bool { endMinute != nil }
+    var isEvent: Bool { isAllDay || endMinute != nil }
+
+    init(startMinute: Int, endMinute: Int? = nil, endDayOffset: Int = 0, isAllDay: Bool = false) {
+        self.startMinute = startMinute
+        self.endMinute = endMinute
+        self.endDayOffset = max(0, endDayOffset)
+        self.isAllDay = isAllDay
+    }
 
     // MARK: Times on a day
 
+    /// `day` is the day the note is stored on, which is the event's first day.
     func start(on day: Date) -> Date {
-        Self.date(atMinute: startMinute, on: day)
+        if isAllDay { return Calendar.current.startOfDay(for: day) }
+        return Self.date(atMinute: startMinute, on: day)
     }
 
     func end(on day: Date) -> Date? {
-        endMinute.map { Self.date(atMinute: $0, on: day) }
+        guard isEvent, !isAllDay else { return nil }
+        return editorEnd(on: day)
     }
 
-    /// e.g. "9:30 – 10:30 AM", or "Due by 9:00 PM".
+    /// The end the schedule editor shows. For an all-day event this is the last
+    /// day included, not the midnight after it that calendars store.
+    func editorEnd(on day: Date) -> Date {
+        let calendar = Calendar.current
+        let startDay = calendar.startOfDay(for: day)
+        let endDay = calendar.date(byAdding: .day, value: endDayOffset, to: startDay) ?? startDay
+        if isAllDay { return endDay }
+        return Self.date(atMinute: endMinute ?? startMinute, on: endDay)
+    }
+
+    /// True when this event, stored on `home`, is still going on `day`.
+    func covers(_ day: Date, storedOn home: Date) -> Bool {
+        guard isEvent else { return false }
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: home)
+        let target = calendar.startOfDay(for: day)
+        guard target >= start,
+              let last = calendar.date(byAdding: .day, value: endDayOffset, to: start)
+        else { return false }
+        return target <= last
+    }
+
+    /// e.g. "9:30 – 10:30 AM", "All day", or "Due by 9:00 PM".
     func summary(on day: Date) -> String {
+        let calendar = Calendar.current
+        let startDay = calendar.startOfDay(for: day)
+
+        if isAllDay {
+            if endDayOffset == 0 { return "All day" }
+            let last = calendar.date(byAdding: .day, value: endDayOffset, to: startDay) ?? startDay
+            let endExclusive = calendar.date(byAdding: .day, value: 1, to: last) ?? last
+            return (startDay..<endExclusive).formatted(
+                Date.IntervalFormatStyle(date: .abbreviated, time: .omitted)
+            )
+        }
+
         let start = start(on: day)
         guard let end = end(on: day), end > start else {
             return "Due by \(start.formatted(date: .omitted, time: .shortened))"
         }
 
         return (start..<end).formatted(
-            Date.IntervalFormatStyle(date: .omitted, time: .shortened)
+            Date.IntervalFormatStyle(
+                date: endDayOffset > 0 ? .abbreviated : .omitted,
+                time: .shortened
+            )
         )
+    }
+
+    /// The start and end to write into a calendar. All-day events end at
+    /// midnight after the last day, in GMT, which is how EventKit stores them.
+    func calendarInterval(storedOn day: Date) -> CalendarInterval? {
+        guard isEvent else { return nil }
+        let calendar = Calendar.current
+        let startDay = calendar.startOfDay(for: day)
+
+        if isAllDay {
+            let endDay = calendar.date(byAdding: .day, value: endDayOffset + 1, to: startDay) ?? startDay
+            return CalendarInterval(
+                start: Self.allDayBoundary(startDay),
+                end: Self.allDayBoundary(endDay),
+                isAllDay: true
+            )
+        }
+
+        let start = Self.date(atMinute: startMinute, on: startDay)
+        let endDay = calendar.date(byAdding: .day, value: endDayOffset, to: startDay) ?? startDay
+        var end = Self.date(atMinute: endMinute ?? startMinute, on: endDay)
+        if end <= start { end = start.addingTimeInterval(60) }
+        return CalendarInterval(start: start, end: end, isAllDay: false)
+    }
+
+    struct CalendarInterval: Equatable {
+        var start: Date
+        var end: Date
+        var isAllDay: Bool
     }
 
     // MARK: Converting
@@ -87,6 +168,48 @@ struct NoteSchedule: Equatable, Codable {
         let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
         return (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
     }
+
+    /// Midnight GMT of that calendar day. EventKit stores all-day events that way,
+    /// so a local midnight would shift them a day in time zones west of Greenwich.
+    static func allDayBoundary(_ day: Date) -> Date {
+        let parts = Calendar.current.dateComponents([.year, .month, .day], from: day)
+        var gmt = Calendar(identifier: .gregorian)
+        gmt.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        return gmt.date(from: DateComponents(year: parts.year, month: parts.month, day: parts.day)) ?? day
+    }
+
+    /// The local calendar day an EventKit all-day boundary falls on.
+    static func localDay(fromAllDayBoundary date: Date) -> Date {
+        var gmt = Calendar(identifier: .gregorian)
+        gmt.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        let parts = gmt.dateComponents([.year, .month, .day], from: date)
+        return Calendar.current.date(from: DateComponents(year: parts.year, month: parts.month, day: parts.day))
+            ?? Calendar.current.startOfDay(for: date)
+    }
+
+    // MARK: Codable
+
+    // Written by hand so notes saved before all-day and multi-day events existed
+    // still decode.
+    private enum CodingKeys: String, CodingKey {
+        case startMinute, endMinute, endDayOffset, isAllDay
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        startMinute = try container.decode(Int.self, forKey: .startMinute)
+        endMinute = try container.decodeIfPresent(Int.self, forKey: .endMinute)
+        endDayOffset = try container.decodeIfPresent(Int.self, forKey: .endDayOffset) ?? 0
+        isAllDay = try container.decodeIfPresent(Bool.self, forKey: .isAllDay) ?? false
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(startMinute, forKey: .startMinute)
+        try container.encodeIfPresent(endMinute, forKey: .endMinute)
+        if endDayOffset != 0 { try container.encode(endDayOffset, forKey: .endDayOffset) }
+        if isAllDay { try container.encode(isAllDay, forKey: .isAllDay) }
+    }
 }
 
 /// A single thing written down on a given day.
@@ -96,6 +219,13 @@ struct Note: Identifiable, Equatable {
     var attachments: [NoteAttachment] = []
     /// Set once the note has been given a time; `nil` for a plain note.
     var schedule: NoteSchedule?
+    /// The calendar event this note mirrors, when it is synced.
+    var calendarEventID: String?
+    /// Start of one occurrence, so instances of a repeating event stay distinct.
+    var calendarOccurrence: Date?
+    /// The calendar's last modified date once both sides match. `nil` means
+    /// local edits still need pushing, and a refresh must not overwrite them.
+    var calendarRevision: Date?
     var createdAt = Date.now
 
     var mediaAttachments: [NoteAttachment] { attachments.filter(\.kind.isVisualMedia) }
@@ -135,6 +265,29 @@ struct Note: Identifiable, Equatable {
         if !documentAttachments.isEmpty { return "doc.text" }
         if blocks.contains(where: \.isChecklistItem) { return "checklist" }
         return "text.alignleft"
+    }
+
+    /// The plain title a calendar event should carry: the first written line.
+    var calendarTitle: String {
+        if let written = blocks.first(where: { !$0.isBlank }) {
+            let line = String(written.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !line.isEmpty { return line }
+        }
+        return "New Event"
+    }
+
+    /// Replaces the first written line with a calendar title. A calendar title
+    /// is plain text, so a rename made in the calendar app drops that line's formatting.
+    mutating func setCalendarTitle(_ title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved = trimmed.isEmpty ? "New Event" : trimmed
+        guard resolved != calendarTitle else { return }
+
+        if let index = blocks.firstIndex(where: { !$0.isBlank }) {
+            blocks[index].text = AttributedString(resolved)
+        } else {
+            blocks.insert(NoteBlock(text: AttributedString(resolved)), at: 0)
+        }
     }
 }
 
@@ -181,7 +334,10 @@ extension NoteBlock: Codable {
 // Written by hand so that notes saved before attachments and schedules existed
 // still decode.
 extension Note: Codable {
-    private enum CodingKeys: String, CodingKey { case id, blocks, attachments, schedule, createdAt }
+    private enum CodingKeys: String, CodingKey {
+        case id, blocks, attachments, schedule, createdAt
+        case calendarEventID, calendarOccurrence, calendarRevision
+    }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -189,6 +345,9 @@ extension Note: Codable {
         blocks = try container.decode([NoteBlock].self, forKey: .blocks)
         attachments = try container.decodeIfPresent([NoteAttachment].self, forKey: .attachments) ?? []
         schedule = try container.decodeIfPresent(NoteSchedule.self, forKey: .schedule)
+        calendarEventID = try container.decodeIfPresent(String.self, forKey: .calendarEventID)
+        calendarOccurrence = try container.decodeIfPresent(Date.self, forKey: .calendarOccurrence)
+        calendarRevision = try container.decodeIfPresent(Date.self, forKey: .calendarRevision)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
     }
 
@@ -198,6 +357,9 @@ extension Note: Codable {
         try container.encode(blocks, forKey: .blocks)
         try container.encode(attachments, forKey: .attachments)
         try container.encodeIfPresent(schedule, forKey: .schedule)
+        try container.encodeIfPresent(calendarEventID, forKey: .calendarEventID)
+        try container.encodeIfPresent(calendarOccurrence, forKey: .calendarOccurrence)
+        try container.encodeIfPresent(calendarRevision, forKey: .calendarRevision)
         try container.encode(createdAt, forKey: .createdAt)
     }
 }
@@ -210,75 +372,181 @@ final class NoteStore {
     private(set) var notesByDay: [String: [Note]] = [:]
 
     private let fileURL: URL?
+    private let calendarSync = CalendarSync()
+    /// Set while applying a calendar refresh, so it isn't pushed straight back.
+    private var isApplyingCalendar = false
 
     /// Pass `persistsToDisk: false` for previews and other throwaway stores.
     init(persistsToDisk: Bool = true) {
         fileURL = persistsToDisk ? Self.makeFileURL() : nil
         load()
+        applyPendingWidgetActions()
         publishWidgetSnapshot()
+        if fileURL != nil {
+            calendarSync.start(with: self)
+        }
+    }
+
+    /// Reads the default calendar again. Called when the app becomes active.
+    func syncCalendar() {
+        calendarSync.notesDidChange()
     }
 
     // MARK: Reading
 
+    /// Notes stored on `day`, with events that started earlier and still cover it
+    /// leading the list.
     func notes(on day: Date) -> [Note] {
-        notesByDay[Self.key(for: day)] ?? []
+        let key = Self.key(for: day)
+        let own = notesByDay[key] ?? []
+        let ownIDs = Set(own.map(\.id))
+        let calendar = Calendar.current
+        let target = calendar.startOfDay(for: day)
+        var carried: [Note] = []
+
+        for (otherKey, notes) in notesByDay {
+            guard otherKey != key, let home = Self.date(forKey: otherKey) else { continue }
+            for note in notes where !ownIDs.contains(note.id) {
+                guard let schedule = note.schedule, schedule.covers(target, storedOn: home) else { continue }
+                carried.append(note)
+            }
+        }
+
+        carried.sort { lhs, rhs in
+            let leftAllDay = lhs.schedule?.isAllDay == true
+            let rightAllDay = rhs.schedule?.isAllDay == true
+            if leftAllDay != rightAllDay { return leftAllDay }
+            return (lhs.schedule?.startMinute ?? 0) < (rhs.schedule?.startMinute ?? 0)
+        }
+        return carried + own
+    }
+
+    /// Every day that has a note, including the later days of a multi-day event.
+    func daysHoldingNotes() -> [Date] {
+        var days = Set<Date>()
+        let calendar = Calendar.current
+
+        for (key, notes) in notesByDay {
+            guard let home = Self.date(forKey: key) else { continue }
+            let start = calendar.startOfDay(for: home)
+            days.insert(start)
+            for note in notes {
+                guard let schedule = note.schedule, schedule.isEvent, schedule.endDayOffset > 0 else { continue }
+                for offset in 1...schedule.endDayOffset {
+                    if let later = calendar.date(byAdding: .day, value: offset, to: start) {
+                        days.insert(calendar.startOfDay(for: later))
+                    }
+                }
+            }
+        }
+        return days.sorted()
+    }
+
+    /// The day a note is stored on. A multi-day event lives on its first day,
+    /// even when it is shown on the days that follow.
+    func storedDay(of noteID: UUID) -> Date? {
+        guard let key = locate(noteID)?.key else { return nil }
+        return Self.date(forKey: key)
     }
 
     // MARK: Writing
 
-    /// Inserts the note, replaces it if it already exists, or removes it when empty.
+    /// Inserts the note, replaces it wherever it already lives, or removes it when empty.
     func save(_ note: Note, on day: Date) {
-        let key = Self.key(for: day)
-        var notes = notesByDay[key] ?? []
-        let trimmed = note.trimmed
-
-        if let index = notes.firstIndex(where: { $0.id == note.id }) {
-            if trimmed.isEmpty {
-                discardFiles(of: [notes[index]])
-                notes.remove(at: index)
-            } else {
-                notes[index] = trimmed
-            }
-        } else if !trimmed.isEmpty {
-            notes.append(trimmed)
+        var trimmed = note.trimmed
+        if !isApplyingCalendar {
+            trimmed.calendarRevision = nil
         }
 
-        notesByDay[key] = notes
+        if trimmed.isEmpty {
+            delete([trimmed.id], on: day)
+            return
+        }
+
+        if let located = locate(trimmed.id) {
+            notesByDay[located.key]?[located.index] = trimmed
+        } else {
+            notesByDay[Self.key(for: day), default: []].append(trimmed)
+        }
         persist()
     }
 
     /// Crosses a checklist item off (or back on) and sinks checked items to the
     /// bottom of their note.
     func toggleChecklistItem(_ blockID: UUID, inNote noteID: UUID, on day: Date) {
-        let key = Self.key(for: day)
-        guard var notes = notesByDay[key],
-              let noteIndex = notes.firstIndex(where: { $0.id == noteID })
+        guard let located = locate(noteID, preferring: day),
+              let block = notesByDay[located.key]?[located.index].blocks.first(where: { $0.id == blockID })
         else { return }
 
-        var note = notes[noteIndex]
-        guard let blockIndex = note.blocks.firstIndex(where: { $0.id == blockID }),
-              note.blocks[blockIndex].isChecklistItem
-        else { return }
+        guard setChecklistItem(blockID, inNote: noteID, checked: !block.isChecked, on: day) else { return }
+        persist()
+    }
 
-        let isChecked = !note.blocks[blockIndex].isChecked
+    /// Puts a checklist item into a given state, whatever it was in before.
+    /// Returns whether anything changed; the caller persists, so a batch of
+    /// these is written once.
+    @discardableResult
+    private func setChecklistItem(
+        _ blockID: UUID,
+        inNote noteID: UUID,
+        checked isChecked: Bool,
+        on day: Date?
+    ) -> Bool {
+        guard let located = locate(noteID, preferring: day),
+              var note = notesByDay[located.key]?[located.index],
+              let blockIndex = note.blocks.firstIndex(where: { $0.id == blockID }),
+              note.blocks[blockIndex].isChecklistItem,
+              note.blocks[blockIndex].isChecked != isChecked
+        else { return false }
+
         note.blocks[blockIndex].kind = .checklist(isChecked: isChecked)
         // Stable partition: checked items move down, everything else keeps its order.
         note.blocks = note.blocks.filter { !$0.isChecked } + note.blocks.filter(\.isChecked)
+        if !isApplyingCalendar { note.calendarRevision = nil }
 
-        notes[noteIndex] = note
-        notesByDay[key] = notes
-        persist()
+        notesByDay[located.key]?[located.index] = note
+        return true
+    }
+
+    /// Writes in the checklist items crossed off from the widget while the app
+    /// wasn't running. Called on launch and whenever the app becomes active.
+    func applyPendingWidgetActions() {
+        #if os(iOS)
+        // A throwaway store (previews, tests) must not swallow real taps.
+        guard fileURL != nil else { return }
+
+        let actions = TodayWidgetActionQueue.pending()
+        guard !actions.isEmpty else { return }
+
+        var changed = false
+        for action in actions {
+            let didChange = setChecklistItem(
+                action.blockID,
+                inNote: action.noteID,
+                checked: action.isChecked,
+                on: nil
+            )
+            changed = changed || didChange
+        }
+
+        TodayWidgetActionQueue.clear(Set(actions.map(\.id)))
+        // Even with nothing to change, the widget is drawing its own copy of
+        // these taps and needs a snapshot without them.
+        if changed {
+            persist()
+        } else {
+            publishWidgetSnapshot()
+        }
+        #endif
     }
 
     /// Gives a note a time, or takes it away again when passed `nil`.
     func setSchedule(_ schedule: NoteSchedule?, forNote noteID: UUID, on day: Date) {
-        let key = Self.key(for: day)
-        guard var notes = notesByDay[key],
-              let index = notes.firstIndex(where: { $0.id == noteID })
-        else { return }
-
-        notes[index].schedule = schedule
-        notesByDay[key] = notes
+        guard let located = locate(noteID, preferring: day) else { return }
+        notesByDay[located.key]?[located.index].schedule = schedule
+        if !isApplyingCalendar {
+            notesByDay[located.key]?[located.index].calendarRevision = nil
+        }
         persist()
     }
 
@@ -289,14 +557,14 @@ final class NoteStore {
         inNote noteID: UUID,
         on day: Date
     ) {
-        let key = Self.key(for: day)
-        guard var notes = notesByDay[key],
-              let noteIndex = notes.firstIndex(where: { $0.id == noteID }),
-              let attachmentIndex = notes[noteIndex].attachments.firstIndex(where: { $0.id == attachmentID })
+        guard let located = locate(noteID, preferring: day),
+              var note = notesByDay[located.key]?[located.index],
+              let attachmentIndex = note.attachments.firstIndex(where: { $0.id == attachmentID })
         else { return }
 
-        notes[noteIndex].attachments[attachmentIndex].transcript = transcript
-        notesByDay[key] = notes
+        note.attachments[attachmentIndex].transcript = transcript
+        if !isApplyingCalendar { note.calendarRevision = nil }
+        notesByDay[located.key]?[located.index] = note
         persist()
     }
 
@@ -306,9 +574,24 @@ final class NoteStore {
 
     func delete(_ noteIDs: Set<UUID>, on day: Date) {
         guard !noteIDs.isEmpty else { return }
-        let key = Self.key(for: day)
-        discardFiles(of: (notesByDay[key] ?? []).filter { noteIDs.contains($0.id) })
-        notesByDay[key]?.removeAll { noteIDs.contains($0.id) }
+        var removed: [Note] = []
+        let preferred = Self.key(for: day)
+        let keys = [preferred] + notesByDay.keys.filter { $0 != preferred }
+
+        for key in keys {
+            guard var notes = notesByDay[key] else { continue }
+            let going = notes.filter { noteIDs.contains($0.id) }
+            guard !going.isEmpty else { continue }
+            removed.append(contentsOf: going)
+            notes.removeAll { noteIDs.contains($0.id) }
+            notesByDay[key] = notes
+        }
+
+        guard !removed.isEmpty else { return }
+        discardFiles(of: removed)
+        if !isApplyingCalendar {
+            calendarSync.remove(removed)
+        }
         persist()
     }
 
@@ -321,19 +604,114 @@ final class NoteStore {
     }
 
     /// Moves notes to another day, keeping their order at the end of that day.
+    /// A multi-day event is stored on its first day, so the note is found wherever
+    /// it lives rather than only on `source`.
     func move(_ noteIDs: Set<UUID>, from source: Date, to destination: Date) {
-        let sourceKey = Self.key(for: source)
         let destinationKey = Self.key(for: destination)
-        guard !noteIDs.isEmpty, sourceKey != destinationKey else { return }
+        guard !noteIDs.isEmpty else { return }
 
-        guard var sourceNotes = notesByDay[sourceKey] else { return }
-        let moved = sourceNotes.filter { noteIDs.contains($0.id) }
+        var moved: [Note] = []
+        let preferred = Self.key(for: source)
+        let keys = [preferred] + notesByDay.keys.filter { $0 != preferred }
+
+        for key in keys where key != destinationKey {
+            guard var notes = notesByDay[key] else { continue }
+            let leaving = notes.filter { noteIDs.contains($0.id) }
+            guard !leaving.isEmpty else { continue }
+            notes.removeAll { noteIDs.contains($0.id) }
+            notesByDay[key] = notes
+            moved.append(contentsOf: leaving)
+        }
+
         guard !moved.isEmpty else { return }
-
-        sourceNotes.removeAll { noteIDs.contains($0.id) }
-        notesByDay[sourceKey] = sourceNotes
+        if !isApplyingCalendar {
+            for index in moved.indices {
+                moved[index].calendarRevision = nil
+            }
+        }
         notesByDay[destinationKey, default: []].append(contentsOf: moved)
         persist()
+    }
+
+    // MARK: Calendar refresh
+
+    /// Inserts or updates a note brought in from the calendar, without pushing
+    /// that change straight back out.
+    func applyCalendarNote(_ note: Note, on day: Date) {
+        isApplyingCalendar = true
+        defer { isApplyingCalendar = false }
+
+        save(note, on: day)
+        guard let stored = storedDay(of: note.id),
+              !Calendar.current.isDate(stored, inSameDayAs: day)
+        else { return }
+        move([note.id], from: stored, to: day)
+    }
+
+    /// Drops a note whose calendar event was deleted, without trying to delete
+    /// that event again.
+    func removeCalendarNote(_ noteID: UUID, on day: Date) {
+        isApplyingCalendar = true
+        defer { isApplyingCalendar = false }
+        delete([noteID], on: day)
+    }
+
+    /// Records the calendar item a note now mirrors, but only if the note wasn't
+    /// edited again while the write was in flight.
+    func stampCalendarLink(
+        id: String?,
+        occurrence: Date?,
+        revision: Date?,
+        for noteID: UUID,
+        title: String,
+        schedule: NoteSchedule?
+    ) -> Bool {
+        guard let located = locate(noteID),
+              var note = notesByDay[located.key]?[located.index],
+              note.calendarTitle == title,
+              note.schedule == schedule
+        else { return false }
+
+        note.calendarEventID = id
+        note.calendarOccurrence = occurrence
+        note.calendarRevision = revision
+
+        isApplyingCalendar = true
+        notesByDay[located.key]?[located.index] = note
+        persist()
+        isApplyingCalendar = false
+        return true
+    }
+
+    /// Remembers which calendar event a note belongs to when the note was edited
+    /// again before the link could be stamped. The revision stays clear so the
+    /// newer text is pushed next.
+    func attachCalendarEvent(id: String, occurrence: Date?, for noteID: UUID) {
+        guard let located = locate(noteID),
+              notesByDay[located.key]?[located.index].calendarEventID == nil
+        else { return }
+        isApplyingCalendar = true
+        notesByDay[located.key]?[located.index].calendarEventID = id
+        notesByDay[located.key]?[located.index].calendarOccurrence = occurrence
+        persist()
+        isApplyingCalendar = false
+    }
+
+    /// Where a note is stored. `day` is checked first because that is usually it;
+    /// a multi-day event shown on a later day is found on its first day instead.
+    private func locate(_ noteID: UUID, preferring day: Date? = nil) -> (key: String, index: Int)? {
+        if let day {
+            let key = Self.key(for: day)
+            if let index = notesByDay[key]?.firstIndex(where: { $0.id == noteID }) {
+                return (key, index)
+            }
+        }
+        for (key, notes) in notesByDay {
+            if let index = notes.firstIndex(where: { $0.id == noteID }) {
+                return (key, index)
+            }
+        }
+        return nil
     }
 
     // MARK: Day keys
@@ -382,6 +760,10 @@ final class NoteStore {
             publishWidgetSnapshot()
         } catch {
             print("Wispr: could not save notes — \(error)")
+            return
+        }
+        if !isApplyingCalendar {
+            calendarSync.notesDidChange()
         }
     }
 

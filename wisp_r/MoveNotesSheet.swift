@@ -69,6 +69,7 @@ struct MoveNotesSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+        .wisprSheetEdge()
         .preferredColorScheme(.dark)
     }
 
@@ -78,17 +79,17 @@ struct MoveNotesSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(DayFormat.relativeTitle(for: chosenDay))
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.wispr(17, weight: .semibold))
                     .foregroundStyle(.white)
 
                 Text(DayFormat.dateSubtitle(for: chosenDay))
-                    .font(.system(size: 13))
+                    .font(.wispr(13))
                     .foregroundStyle(Color.wisprSecondaryText)
             }
 
             if notesOnChosenDay.isEmpty {
                 Text("Nothing on this day yet.")
-                    .font(.system(size: 15))
+                    .font(.wispr(15))
                     .foregroundStyle(Color.wisprSecondaryText)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 12)
@@ -102,7 +103,10 @@ struct MoveNotesSheet: View {
                                 .padding(.leading, 42)
                         }
 
-                        NoteSummaryRow(note: note, day: chosenDay)
+                        NoteSummaryRow(
+                            note: note,
+                            day: store.storedDay(of: note.id) ?? chosenDay
+                        )
                     }
                 }
                 .wisprCardBackground()
@@ -123,19 +127,19 @@ struct NoteSummaryRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Image(systemName: note.previewSymbol)
-                .font(.system(size: 14))
+                .font(.wispr(14))
                 .foregroundStyle(Color.white.opacity(0.55))
                 .frame(width: 18)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(note.summaryLine)
-                    .font(.system(size: 15))
+                    .font(.wispr(15))
                     .foregroundStyle(.white)
                     .lineLimit(1)
 
                 if let schedule = note.schedule {
                     Text(schedule.summary(on: day))
-                        .font(.system(size: 12))
+                        .font(.wispr(12))
                         .foregroundStyle(Color.wisprSecondaryText)
                 }
             }

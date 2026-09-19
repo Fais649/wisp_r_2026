@@ -19,6 +19,10 @@ struct DayView: View {
     /// than the menu still names where it came from.
     private let backTitle: String
 
+    /// A request from outside — the widget's plus — to write something new.
+    /// Cleared once honoured.
+    @Binding private var newNoteRequest: UUID?
+
     private let today = Calendar.current.startOfDay(for: .now)
 
     @State private var visibleDayOffset: Int?
@@ -34,8 +38,13 @@ struct DayView: View {
     @State private var transcriptionErrors: [UUID: String] = [:]
 
     /// Opens on `initialDay`, or today when none is given.
-    init(initialDay: Date? = nil, backTitle: String = "Wispr") {
+    init(
+        initialDay: Date? = nil,
+        backTitle: String = AppSettings.shared.displayTitle,
+        newNoteRequest: Binding<UUID?> = .constant(nil)
+    ) {
         self.backTitle = backTitle
+        _newNoteRequest = newNoteRequest
 
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: .now)
@@ -77,13 +86,21 @@ struct DayView: View {
             }
         }
         .toolbar(.hidden, for: .navigationBar)
+        // `task(id:)` rather than `onChange`: a request from the widget can
+        // land before this view exists, when the tap launches the app cold.
+        .task(id: newNoteRequest) {
+            guard newNoteRequest != nil else { return }
+            newNoteRequest = nil
+            composeNewNoteForToday()
+        }
         .sheet(item: $editingNote) { note in
+            let home = store.storedDay(of: note.id) ?? day
             NavigationStack {
                 NoteEditorSheet(
                     note: note,
-                    day: day,
-                    onCommit: { edited in store.save(edited, on: day) },
-                    onMove: { destination in move(note, from: day, to: destination) }
+                    day: home,
+                    onCommit: { edited in store.save(edited, on: home) },
+                    onMove: { destination in move(note, from: home, to: destination) }
                 )
                 .toolbar(.hidden, for: .navigationBar)
             }
@@ -103,9 +120,13 @@ struct DayView: View {
             }
         }
         .sheet(item: $schedulingNote) { request in
-            NoteScheduleSheet(note: request.note, day: request.day) { schedule in
+            let home = store.storedDay(of: request.note.id) ?? request.day
+            NoteScheduleSheet(note: request.note, day: home) { schedule, startDay in
                 withAnimation(.snappy) {
-                    store.setSchedule(schedule, forNote: request.note.id, on: request.day)
+                    store.setSchedule(schedule, forNote: request.note.id, on: home)
+                    if !Calendar.current.isDate(startDay, inSameDayAs: home) {
+                        store.move([request.note.id], from: home, to: startDay)
+                    }
                 }
             }
         }
@@ -172,9 +193,9 @@ struct DayView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.wispr(17, weight: .semibold))
                     Text(backTitle)
-                        .font(.system(size: 17))
+                        .font(.wispr(17))
                 }
                 .foregroundStyle(Color.white.opacity(0.6))
             }
@@ -187,11 +208,11 @@ struct DayView: View {
     private func header(for pageDay: Date) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(DayFormat.relativeTitle(for: pageDay))
-                .font(.system(size: 34, weight: .semibold))
+                .font(.wispr(34, weight: .semibold, role: .header))
                 .foregroundStyle(.white)
 
             Text(DayFormat.dateSubtitle(for: pageDay))
-                .font(.system(size: 15))
+                .font(.wispr(15, role: .header))
                 .foregroundStyle(Color.wisprSecondaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -200,7 +221,7 @@ struct DayView: View {
     private func noteRow(_ note: Note, on pageDay: Date) -> some View {
         NoteCard(
             note: note,
-            day: pageDay,
+            day: store.storedDay(of: note.id) ?? pageDay,
             isSelecting: isSelecting,
             isSelected: selectedNoteIDs.contains(note.id),
             onToggle: { block in
@@ -293,7 +314,7 @@ struct DayView: View {
             Spacer()
 
             Text("^[\(selectedNoteIDs.count) note](inflect: true) selected")
-                .font(.system(size: 14))
+                .font(.wispr(14))
                 .foregroundStyle(Color.wisprSecondaryText)
 
             Spacer()
@@ -313,7 +334,7 @@ struct DayView: View {
             .disabled(selectedNoteIDs.isEmpty)
         }
         .buttonStyle(.glass(.regular.interactive()))
-        .font(.system(size: 17))
+        .font(.wispr(17))
         .foregroundStyle(.white)
         .padding(.horizontal, 20)
         .frame(height: 52)
@@ -385,7 +406,7 @@ struct DayView: View {
             withAnimation(.snappy) { visibleDayOffset = 0 }
         } label: {
             Image(systemName: "diamond.fill")
-                .font(.system(size: 19))
+                .font(.wispr(19))
                 .foregroundStyle(.white)
                 .frame(width: 52, height: 52)
                 .background(.bar, in: Circle())
@@ -403,6 +424,18 @@ struct DayView: View {
 
     private func startNewNote() {
         guard !isSelecting else { return }
+        editingNote = Note(blocks: [NoteBlock()])
+    }
+
+    /// Pages back to today and opens a blank note there, whatever the day view
+    /// was doing beforehand.
+    private func composeNewNoteForToday() {
+        withAnimation(.snappy) {
+            isSelecting = false
+            selectedNoteIDs = []
+            visibleDayOffset = 0
+        }
+
         editingNote = Note(blocks: [NoteBlock()])
     }
 
@@ -546,7 +579,7 @@ struct NoteCard: View {
     /// to tap into editing on a card that is nothing but pictures or a memo.
     private var footer: some View {
         Text(createdCaption)
-            .font(.system(size: 11).italic())
+            .font(.wispr(11).italic())
             .foregroundStyle(Color.white.opacity(0.35))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 14)
@@ -585,7 +618,7 @@ struct NoteCard: View {
                 .strokeBorder(isSelected ? Color.white.opacity(0.5) : Color.wisprSeparator, lineWidth: 1.5)
 
             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 20))
+                .font(.wispr(20))
                 .foregroundStyle(isSelected ? .white : Color.white.opacity(0.45))
                 .padding(10)
         }
@@ -622,7 +655,7 @@ struct NoteCard: View {
     private func markedRow(_ block: NoteBlock, marker: Text) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             marker
-                .font(.system(size: 17))
+                .font(.wispr(17, role: .note))
                 .foregroundStyle(Color.white.opacity(0.6))
                 .frame(minWidth: 14, alignment: .leading)
 
@@ -636,7 +669,7 @@ struct NoteCard: View {
 
     private func blockText(_ block: NoteBlock) -> some View {
         Text(block.text)
-            .font(.system(size: 17))
+            .font(.wispr(17, role: .note))
             .foregroundStyle(.white)
     }
 }
@@ -727,7 +760,7 @@ private struct MediaMosaic: View {
                         ZStack {
                             Color.black.opacity(0.45)
                             Text("+\(remainder)")
-                                .font(.system(size: 22, weight: .semibold))
+                                .font(.wispr(22, weight: .semibold))
                                 .foregroundStyle(.white)
                         }
                     }
@@ -751,11 +784,11 @@ private struct ChecklistItemRow: View {
         HStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 17))
+                    .font(.wispr(17, role: .note))
                     .foregroundStyle(isChecked ? Color.white.opacity(0.45) : Color.white.opacity(0.7))
 
                 Text(block.text)
-                    .font(.system(size: 17))
+                    .font(.wispr(17, role: .note))
                     .strikethrough(isChecked, color: Color.white.opacity(0.45))
                     .foregroundStyle(isChecked ? Color.white.opacity(0.4) : .white)
 
@@ -814,7 +847,7 @@ extension NoteStore {
         let store = NoteStore(persistsToDisk: false)
         let today = Calendar.current.startOfDay(for: .now)
         var heading = AttributedString("Groceries for the week")
-        heading.font = .system(size: 22, weight: .semibold)
+        heading.font = .wispr(22, weight: .semibold)
 
         store.save(
             Note(blocks: [
@@ -855,7 +888,9 @@ extension NoteStore {
 #endif
 
 #Preview("Several notes") {
-    DayView()
+    AppSettings.preview()
+
+    return DayView()
         .environment(NoteStore.previewSeeded())
         .preferredColorScheme(.dark)
 }
@@ -893,5 +928,13 @@ extension NoteStore {
 
     return DayView()
         .environment(store)
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Legacy theme") {
+    AppSettings.preview(theme: .legacy)
+
+    return DayView()
+        .environment(NoteStore.previewSeeded())
         .preferredColorScheme(.dark)
 }

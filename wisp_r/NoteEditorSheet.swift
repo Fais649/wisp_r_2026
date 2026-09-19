@@ -42,6 +42,8 @@ struct NoteEditorSheet: View {
     @State private var isShowingScheduleSheet = false
     /// The time set in this session, kept here until the note is saved.
     @State private var schedule: NoteSchedule?
+    /// The day the event starts on, which may move off the note's current day.
+    @State private var scheduleDay: Date
     /// The day chosen in the move picker, acted on once it has closed.
     @State private var pendingMove: Date?
 
@@ -67,6 +69,7 @@ struct NoteEditorSheet: View {
         _text = State(initialValue: NoteMarkup.text(from: note.blocks))
         _attachments = State(initialValue: note.attachments)
         _schedule = State(initialValue: note.schedule)
+        _scheduleDay = State(initialValue: day)
     }
 
     var body: some View {
@@ -92,7 +95,7 @@ struct NoteEditorSheet: View {
             }
 
             if let schedule {
-                NoteScheduleLabel(schedule: schedule, day: day)
+                NoteScheduleLabel(schedule: schedule, day: scheduleDay)
                     .padding(.horizontal, 14)
                     .padding(.top, 14)
                     .onTapGesture { present { isShowingScheduleSheet = true } }
@@ -101,7 +104,7 @@ struct NoteEditorSheet: View {
             }
 
             TextEditor(text: $text, selection: $selection)
-                .font(.system(size: 17))
+                .font(.wispr(17, role: .editor))
                 .foregroundStyle(.white)
                 .scrollContentBackground(.hidden)
                 // Lets the keyboard — and with it the bar — be put away.
@@ -126,7 +129,9 @@ struct NoteEditorSheet: View {
             }
         }
         .tint(.white)
-        .presentationCornerRadius(Self.cornerRadius)
+        // Opens over half the screen, and can be pulled the rest of the way up.
+        .presentationDetents([.medium, .large])
+        .wisprSheetEdge(cornerRadius: Self.cornerRadius)
         // Also saves when the sheet is swiped away rather than dismissed.
         .onDisappear(perform: save)
         .onAppear { isEditorFocused = true }
@@ -167,8 +172,11 @@ struct NoteEditorSheet: View {
             }
         }
         .sheet(isPresented: $isShowingScheduleSheet) {
-            NoteScheduleSheet(note: scheduledNote, day: day) { newSchedule in
-                withAnimation(.snappy) { schedule = newSchedule }
+            NoteScheduleSheet(note: scheduledNote, day: scheduleDay) { newSchedule, startDay in
+                withAnimation(.snappy) {
+                    schedule = newSchedule
+                    scheduleDay = startDay
+                }
             }
         }
         .alert("Microphone access is off", isPresented: $micPermissionDenied) {
@@ -337,7 +345,7 @@ struct NoteEditorSheet: View {
                 .frame(maxWidth: .infinity)
 
             Text(recorder.formattedElapsed)
-                .font(.system(size: 13, weight: .medium))
+                .font(.wispr(13, weight: .medium))
                 .monospacedDigit()
                 .foregroundStyle(Color.white.opacity(0.7))
 
@@ -345,7 +353,7 @@ struct NoteEditorSheet: View {
                 recorder.cancel()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 14))
+                    .font(.wispr(14))
                     .foregroundStyle(Color.white.opacity(0.7))
             }
             .buttonStyle(.plain)
@@ -353,7 +361,7 @@ struct NoteEditorSheet: View {
 
             Button(action: stopRecording) {
                 Image(systemName: "stop.fill")
-                    .font(.system(size: 14))
+                    .font(.wispr(14))
                     .foregroundStyle(.black)
                     .frame(width: 34, height: 34)
                     .background(.white, in: Circle())
@@ -494,12 +502,18 @@ struct NoteEditorSheet: View {
         guard let destination = pendingMove else { return }
         pendingMove = nil
 
-        save()
-        onMove(destination)
+        commit(movingTo: destination)
         dismiss()
     }
 
     private func save() {
+        commit(movingTo: nil)
+    }
+
+    /// Saves the note, then moves it when the event starts on another day or
+    /// the move picker chose one. An explicit destination wins over the event's
+    /// start day.
+    private func commit(movingTo destination: Date?) {
         guard !hasFinished else { return }
         hasFinished = true
 
@@ -508,6 +522,11 @@ struct NoteEditorSheet: View {
         updated.attachments = attachments
         updated.schedule = schedule
         onCommit(updated)
+
+        let target = destination ?? scheduleDay
+        if !Calendar.current.isDate(target, inSameDayAs: day) {
+            onMove(target)
+        }
 
         // Files of attachments taken off the note are no longer referenced.
         AttachmentThumbnails.shared.forget(removedAttachments)
@@ -736,7 +755,7 @@ private struct MediaCarousel: View {
         .overlay(alignment: .bottom) {
             if attachments.count > 1 {
                 Text("\(attachments.count) items")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.wispr(12, weight: .medium))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
@@ -790,19 +809,19 @@ struct DocumentAttachmentRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: attachment.symbolName)
-                .font(.system(size: 18))
+                .font(.wispr(18))
                 .foregroundStyle(Color.white.opacity(0.75))
                 .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(attachment.displayName)
-                    .font(.system(size: 15))
+                    .font(.wispr(15))
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .truncationMode(.middle)
 
                 Text(attachment.formattedSize)
-                    .font(.system(size: 12))
+                    .font(.wispr(12))
                     .foregroundStyle(Color.wisprSecondaryText)
             }
 

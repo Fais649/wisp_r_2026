@@ -246,14 +246,14 @@ struct AttachmentThumbnail: View {
                         .scaledToFill()
                 } else {
                     Image(systemName: attachment.symbolName)
-                        .font(.system(size: 22))
+                        .font(.wispr(22))
                         .foregroundStyle(Color.white.opacity(0.3))
                 }
             }
             .overlay {
                 if attachment.kind == .video {
                     Image(systemName: "play.circle.fill")
-                        .font(.system(size: 34))
+                        .font(.wispr(34))
                         .foregroundStyle(.white, Color.black.opacity(0.35))
                 }
             }

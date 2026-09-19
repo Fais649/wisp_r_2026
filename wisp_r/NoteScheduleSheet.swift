@@ -1,12 +1,17 @@
 import SwiftUI
 
-/// Gives a note a time on its day: either a span, which makes it a calendar
-/// event, or a single time it is due by.
+/// Gives a note a time: either a span, which makes it a calendar event, or a
+/// single time it is due by.
+///
+/// Events can be all day, and they can run past the day they start. The day
+/// handed back with the schedule is the day the note should be stored on — the
+/// event's first day, or the note's current day when the time is cleared or it
+/// is only due by then.
 struct NoteScheduleSheet: View {
     let note: Note
     let day: Date
-    /// `nil` clears the note's time.
-    let onSave: (NoteSchedule?) -> Void
+    /// `schedule` is `nil` when the time is being cleared.
+    let onSave: (NoteSchedule?, Date) -> Void
 
     private enum Kind: Hashable, CaseIterable {
         case event
@@ -21,27 +26,34 @@ struct NoteScheduleSheet: View {
     }
 
     @State private var kind: Kind
+    @State private var isAllDay: Bool
     @State private var start: Date
     @State private var end: Date
     @State private var due: Date
+    /// Set while snapping between all-day and timed, so that snap isn't also
+    /// treated as the user dragging the start along.
+    @State private var isAdjustingTimes = false
 
     @Environment(\.dismiss) private var dismiss
 
     /// Opens on the note's current time, or on sensible defaults: the next hour
     /// for an event, and the end of the day for something due.
-    init(note: Note, day: Date, onSave: @escaping (NoteSchedule?) -> Void) {
+    init(note: Note, day: Date, onSave: @escaping (NoteSchedule?, Date) -> Void) {
         self.note = note
         self.day = day
         self.onSave = onSave
 
         let schedule = note.schedule
         let defaultStart = Self.nextHour(on: day)
+        let isEvent = schedule?.isEvent == true
 
         _kind = State(initialValue: schedule?.isEvent == false ? .due : .event)
-        _start = State(initialValue: schedule?.start(on: day) ?? defaultStart)
+        _isAllDay = State(initialValue: schedule?.isAllDay == true)
+        _start = State(initialValue: isEvent ? schedule?.start(on: day) ?? defaultStart : defaultStart)
         _end = State(
-            initialValue: schedule?.end(on: day)
-                ?? defaultStart.addingTimeInterval(3600)
+            initialValue: isEvent
+                ? schedule?.editorEnd(on: day) ?? defaultStart.addingTimeInterval(AppSettings.shared.eventLength)
+                : defaultStart.addingTimeInterval(AppSettings.shared.eventLength)
         )
         _due = State(
             initialValue: schedule?.isEvent == false
@@ -55,7 +67,7 @@ struct NoteScheduleSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     Text(DayFormat.dateSubtitle(for: day))
-                        .font(.system(size: 13))
+                        .font(.wispr(13))
                         .foregroundStyle(Color.wisprSecondaryText)
 
                     Picker("Kind", selection: $kind) {
@@ -72,7 +84,7 @@ struct NoteScheduleSheet: View {
 
                     if note.schedule != nil {
                         Button(role: .destructive) {
-                            onSave(nil)
+                            onSave(nil, day)
                             dismiss()
                         } label: {
                             Label("Remove time", systemImage: "clock.badge.xmark")
@@ -104,6 +116,7 @@ struct NoteScheduleSheet: View {
         }
         .tint(.white)
         .presentationDetents([.medium, .large])
+        .wisprSheetEdge()
         .preferredColorScheme(.dark)
     }
 
@@ -112,20 +125,39 @@ struct NoteScheduleSheet: View {
     private var eventTimes: some View {
         VStack(alignment: .leading, spacing: 8) {
             VStack(spacing: 0) {
-                timeRow("Starts", selection: $start)
+                allDayRow
 
-                Rectangle()
-                    .fill(Color.wisprSeparator)
-                    .frame(height: 1)
-                    .padding(.leading, 16)
+                separator
 
-                timeRow("Ends", selection: $end, in: start...endOfDay)
+                timeRow("Starts", selection: startSelection, components: eventComponents)
+
+                separator
+
+                timeRow(
+                    "Ends",
+                    selection: endSelection,
+                    components: eventComponents,
+                    in: endLowerBound...endUpperBound
+                )
             }
             .wisprCardBackground()
-            // Dragging the start along keeps the event the same length; its
-            // range then stops the end landing before the start.
-            .onChange(of: start) { oldValue, newValue in
-                end = end.addingTimeInterval(newValue.timeIntervalSince(oldValue))
+            .onChange(of: isAllDay) { _, allDay in
+                isAdjustingTimes = true
+                let calendar = Calendar.current
+                if allDay {
+                    start = calendar.startOfDay(for: start)
+                    let endDay = calendar.startOfDay(for: end)
+                    end = endDay < start ? start : endDay
+                } else {
+                    let endDay = calendar.startOfDay(for: end)
+                    start = NoteSchedule.date(atMinute: 9 * 60, on: start)
+                    if calendar.isDate(start, inSameDayAs: endDay) {
+                        end = start.addingTimeInterval(AppSettings.shared.eventLength)
+                    } else {
+                        end = NoteSchedule.date(atMinute: 17 * 60, on: endDay)
+                    }
+                }
+                isAdjustingTimes = false
             }
 
             caption(durationCaption)
@@ -134,16 +166,44 @@ struct NoteScheduleSheet: View {
 
     private var dueTime: some View {
         VStack(alignment: .leading, spacing: 8) {
-            timeRow("Due by", selection: $due, in: startOfDay...Self.latestDue(on: day))
-                .wisprCardBackground()
+            timeRow(
+                "Due by",
+                selection: $due,
+                components: .hourAndMinute,
+                in: startOfDay...Self.latestDue(on: day)
+            )
+            .wisprCardBackground()
 
             caption("A note can be due any time up to 9:00 PM.")
         }
     }
 
+    private var allDayRow: some View {
+        HStack {
+            Text("All day")
+                .font(.wispr(17))
+                .foregroundStyle(.white)
+                .accessibilityHidden(true)
+
+            Spacer()
+
+            Toggle("All day", isOn: $isAllDay)
+                .labelsHidden()
+        }
+        .padding(.horizontal, 16)
+        .frame(minHeight: 52)
+    }
+
+    private var separator: some View {
+        Rectangle()
+            .fill(Color.wisprSeparator)
+            .frame(height: 1)
+            .padding(.leading, 16)
+    }
+
     private func caption(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 13))
+            .font(.wispr(13))
             .foregroundStyle(Color.wisprSecondaryText)
             .padding(.horizontal, 4)
     }
@@ -151,39 +211,84 @@ struct NoteScheduleSheet: View {
     private func timeRow(
         _ title: String,
         selection: Binding<Date>,
+        components: DatePickerComponents,
         in range: ClosedRange<Date>? = nil
     ) -> some View {
         HStack {
             Text(title)
-                .font(.system(size: 17))
+                .font(.wispr(17))
                 .foregroundStyle(.white)
 
-            Spacer()
+            Spacer(minLength: 12)
 
             if let range {
-                DatePicker(title, selection: selection, in: range, displayedComponents: .hourAndMinute)
+                DatePicker(title, selection: selection, in: range, displayedComponents: components)
                     .labelsHidden()
             } else {
-                DatePicker(title, selection: selection, displayedComponents: .hourAndMinute)
+                DatePicker(title, selection: selection, displayedComponents: components)
                     .labelsHidden()
             }
         }
         .padding(.horizontal, 16)
-        .frame(height: 52)
+        .frame(minHeight: 52)
+    }
+
+    /// Dragging the start along keeps the event the same length.
+    private var startSelection: Binding<Date> {
+        Binding(
+            get: { start },
+            set: { newValue in
+                let oldValue = start
+                start = newValue
+                guard !isAdjustingTimes else { return }
+                var shifted = end.addingTimeInterval(newValue.timeIntervalSince(oldValue))
+                if shifted < newValue {
+                    shifted = isAllDay ? newValue : newValue.addingTimeInterval(60)
+                }
+                end = shifted
+            }
+        )
+    }
+
+    /// The picker refuses a selection outside its range, so the end never reads
+    /// as earlier than the start for the frame in which the start moves.
+    private var endSelection: Binding<Date> {
+        Binding(
+            get: { max(end, endLowerBound) },
+            set: { end = max($0, endLowerBound) }
+        )
+    }
+
+    private var eventComponents: DatePickerComponents {
+        isAllDay ? .date : [.date, .hourAndMinute]
     }
 
     private var durationCaption: String {
-        let minutes = max(NoteSchedule.minute(of: end) - NoteSchedule.minute(of: start), 0)
-        return "Lasts \(Duration.seconds(minutes * 60).formatted(.units(allowed: [.hours, .minutes], width: .wide)))"
+        if isAllDay {
+            let days = spanDays
+            return days == 1 ? "Lasts 1 day" : "Lasts \(days) days"
+        }
+        let seconds = max(end.timeIntervalSince(start), 60)
+        return "Lasts \(Duration.seconds(seconds).formatted(.units(allowed: [.days, .hours, .minutes], width: .wide)))"
+    }
+
+    private var spanDays: Int {
+        let calendar = Calendar.current
+        let startDay = calendar.startOfDay(for: start)
+        let endDay = calendar.startOfDay(for: max(end, start))
+        return max(0, calendar.dateComponents([.day], from: startDay, to: endDay).day ?? 0) + 1
     }
 
     // MARK: - Bounds
 
     private var startOfDay: Date { Calendar.current.startOfDay(for: day) }
 
-    /// One minute short of midnight, so an event can run to the end of the day.
-    private var endOfDay: Date {
-        NoteSchedule.date(atMinute: 24 * 60 - 1, on: day)
+    private var endLowerBound: Date {
+        isAllDay ? Calendar.current.startOfDay(for: start) : start
+    }
+
+    private var endUpperBound: Date {
+        Calendar.current.date(byAdding: .year, value: 2, to: start) ?? start.addingTimeInterval(86_400 * 365)
     }
 
     private static func latestDue(on day: Date) -> Date {
@@ -201,16 +306,39 @@ struct NoteScheduleSheet: View {
     // MARK: - Saving
 
     private func confirm() {
+        let calendar = Calendar.current
+
         switch kind {
         case .event:
-            let startMinute = NoteSchedule.minute(of: start)
-            // At least a minute long, so it always reads as a span.
-            let endMinute = max(NoteSchedule.minute(of: end), startMinute + 1)
-            onSave(NoteSchedule(startMinute: startMinute, endMinute: endMinute))
+            let startDay = calendar.startOfDay(for: start)
+            if isAllDay {
+                let last = calendar.startOfDay(for: max(end, start))
+                let offset = max(0, calendar.dateComponents([.day], from: startDay, to: last).day ?? 0)
+                onSave(
+                    NoteSchedule(startMinute: 0, endDayOffset: offset, isAllDay: true),
+                    startDay
+                )
+            } else {
+                let endDay = calendar.startOfDay(for: max(end, start))
+                var offset = max(0, calendar.dateComponents([.day], from: startDay, to: endDay).day ?? 0)
+                let startMinute = NoteSchedule.minute(of: start)
+                var endMinute = NoteSchedule.minute(of: end)
+                if offset == 0 {
+                    endMinute = max(endMinute, startMinute + 1)
+                    if endMinute >= 24 * 60 {
+                        endMinute = 0
+                        offset = 1
+                    }
+                }
+                onSave(
+                    NoteSchedule(startMinute: startMinute, endMinute: endMinute, endDayOffset: offset),
+                    startDay
+                )
+            }
 
         case .due:
             let minute = min(NoteSchedule.minute(of: due), NoteSchedule.latestDueMinute)
-            onSave(NoteSchedule(startMinute: minute, endMinute: nil))
+            onSave(NoteSchedule(startMinute: minute), day)
         }
 
         dismiss()
@@ -227,10 +355,10 @@ struct NoteScheduleLabel: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: schedule.isEvent ? "calendar" : "clock")
-                .font(.system(size: 12, weight: .medium))
+                .font(.wispr(12, weight: .medium))
 
             Text(schedule.summary(on: day))
-                .font(.system(size: 13, weight: .medium))
+                .font(.wispr(13, weight: .medium))
         }
         .foregroundStyle(Color.white.opacity(0.75))
         .padding(.horizontal, 10)
@@ -244,7 +372,17 @@ struct NoteScheduleLabel: View {
     NoteScheduleSheet(
         note: Note(blocks: [NoteBlock(text: "Dentist")]),
         day: .now
-    ) { _ in }
+    ) { _, _ in }
+}
+
+#Preview("All-day event") {
+    NoteScheduleSheet(
+        note: Note(
+            blocks: [NoteBlock(text: "Trip")],
+            schedule: NoteSchedule(startMinute: 0, endDayOffset: 2, isAllDay: true)
+        ),
+        day: .now
+    ) { _, _ in }
 }
 
 #Preview("Existing due time") {
@@ -254,5 +392,5 @@ struct NoteScheduleLabel: View {
             schedule: NoteSchedule(startMinute: 17 * 60, endMinute: nil)
         ),
         day: .now
-    ) { _ in }
+    ) { _, _ in }
 }
