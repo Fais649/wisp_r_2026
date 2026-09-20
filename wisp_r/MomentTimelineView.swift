@@ -60,15 +60,72 @@ enum Moment: String, Hashable, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Feeds
+
+/// What a timeline screen is showing: a kind of moment, a timeline, or a group
+/// of timelines. Each answers the same two questions — which notes belong, and
+/// in what order — so one view can draw them all.
+struct NoteFeed {
+    let title: String
+    let icon: String
+    /// Shown on a day with nothing in it, e.g. "No notes today".
+    let emptyLabel: String
+    let matches: (Note) -> Bool
+    var ordered: ([Note]) -> [Note] = { $0 }
+    /// A timeline's colour, carried into the screen's heading.
+    var tint: Color?
+
+    static func moment(_ moment: Moment) -> NoteFeed {
+        NoteFeed(
+            title: moment.title,
+            icon: moment.icon,
+            emptyLabel: "No \(moment.title.lowercased()) today",
+            matches: moment.matches,
+            ordered: moment.ordered
+        )
+    }
+
+    static func timeline(_ timeline: NoteTimeline) -> NoteFeed {
+        NoteFeed(
+            title: timeline.displayName,
+            icon: timeline.icon,
+            emptyLabel: "Nothing on this timeline today",
+            matches: { $0.timelineID == timeline.id },
+            tint: timeline.tint.fill
+        )
+    }
+
+    /// Every note on every timeline filed under the group.
+    static func group(_ group: TimelineGroup, timelineIDs: Set<UUID>) -> NoteFeed {
+        NoteFeed(
+            title: group.displayName,
+            icon: group.icon,
+            emptyLabel: "Nothing in this group today",
+            matches: { note in
+                guard let id = note.timelineID else { return false }
+                return timelineIDs.contains(id)
+            }
+        )
+    }
+}
+
 // MARK: - Timeline
 
-/// Every note holding a given kind of moment, in one vertical scroll: the past
-/// above, the future below, opening on today.
+/// Every note in a feed, in one vertical scroll: the past above, the future
+/// below, opening on today.
 ///
 /// Each day is introduced by its relative and actual date, which double as the
 /// separators between notes; tapping one opens that day in the day view.
 struct MomentTimelineView: View {
-    let moment: Moment
+    let feed: NoteFeed
+
+    init(feed: NoteFeed) {
+        self.feed = feed
+    }
+
+    init(moment: Moment) {
+        self.init(feed: .moment(moment))
+    }
 
     @Environment(NoteStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -98,9 +155,9 @@ struct MomentTimelineView: View {
         days.insert(today)
 
         for day in days {
-            let matching = store.notes(on: day).filter(moment.matches)
+            let matching = store.notes(on: day).filter(feed.matches)
             if matching.isEmpty, !Calendar.current.isDate(day, inSameDayAs: today) { continue }
-            notesByDay[Calendar.current.startOfDay(for: day)] = moment.ordered(matching)
+            notesByDay[Calendar.current.startOfDay(for: day)] = feed.ordered(matching)
         }
 
         return notesByDay
@@ -156,18 +213,27 @@ struct MomentTimelineView: View {
                     Text(AppSettings.shared.displayTitle)
                         .font(.wispr(17))
                 }
-                .foregroundStyle(Color.white.opacity(0.6))
+                .foregroundStyle(Color.wisprInk.opacity(0.6))
             }
             .buttonStyle(.plain)
 
             Spacer()
 
             HStack(spacing: 8) {
-                Text(moment.title)
-                Image(systemName: moment.icon)
+                Text(feed.title)
+                Image(systemName: feed.icon)
             }
             .font(.wispr(17))
-            .foregroundStyle(.white)
+            .foregroundStyle(feed.tint == nil ? Color.wisprInk : Color.wisprOnAccent)
+            // A timeline brings its colour with it, so the screen is placed at
+            // a glance; the moments have none and stay plain.
+            .padding(.horizontal, feed.tint == nil ? 0 : 10)
+            .padding(.vertical, feed.tint == nil ? 0 : 5)
+            .background {
+                if let tint = feed.tint {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(tint)
+                }
+            }
         }
     }
 
@@ -224,7 +290,7 @@ struct MomentTimelineView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(DayFormat.relativeTitle(for: day))
                             .font(.wispr(20, weight: .semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Color.wisprInk)
 
                         Text(DayFormat.dateSubtitle(for: day))
                             .font(.wispr(13))
@@ -250,7 +316,7 @@ struct MomentTimelineView: View {
     }
 
     private var emptyDay: some View {
-        Text("No \(moment.title.lowercased()) today")
+        Text(feed.emptyLabel)
             .font(.wispr(15))
             .foregroundStyle(Color.wisprSecondaryText)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -325,6 +391,7 @@ struct MomentTimelineView: View {
     NavigationStack {
         MomentTimelineView(moment: .notes)
             .environment(NoteStore.previewSeeded())
+            .environment(TimelineStore.previewSeeded())
     }
     .preferredColorScheme(.dark)
 }
@@ -333,6 +400,7 @@ struct MomentTimelineView: View {
     NavigationStack {
         MomentTimelineView(moment: .tasks)
             .environment(NoteStore.previewSeeded())
+            .environment(TimelineStore.previewSeeded())
     }
     .preferredColorScheme(.dark)
 }
@@ -341,6 +409,7 @@ struct MomentTimelineView: View {
     NavigationStack {
         MomentTimelineView(moment: .events)
             .environment(NoteStore.previewSeeded())
+            .environment(TimelineStore.previewSeeded())
     }
     .preferredColorScheme(.dark)
 }

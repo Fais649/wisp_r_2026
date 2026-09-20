@@ -121,7 +121,7 @@ struct NoteScheduleSheet: View {
                 }
             }
         }
-        .tint(.white)
+        .tint(Color.wisprInk)
         .presentationDetents([.medium, .large])
         .wisprSheetEdge()
         .preferredColorScheme(.dark)
@@ -192,7 +192,7 @@ struct NoteScheduleSheet: View {
         HStack {
             Text("All day")
                 .font(.wispr(17))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.wisprInk)
                 .accessibilityHidden(true)
 
             Spacer()
@@ -218,7 +218,7 @@ struct NoteScheduleSheet: View {
 
             TextField("Add location", text: $eventLocation)
                 .font(.wispr(17))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.wisprInk)
                 .submitLabel(.done)
 
             if !eventLocation.isEmpty {
@@ -252,7 +252,7 @@ struct NoteScheduleSheet: View {
         HStack {
             Text(title)
                 .font(.wispr(17))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.wisprInk)
 
             Spacer(minLength: 12)
 
@@ -430,10 +430,10 @@ struct NoteScheduleLabel: View {
                     .lineLimit(1)
             }
         }
-        .foregroundStyle(Color.white.opacity(0.75))
+        .foregroundStyle(Color.wisprInk.opacity(0.75))
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(Color.white.opacity(0.08))
+        .background(Color.wisprInk.opacity(0.08))
         .clipShape(Capsule())
     }
 }

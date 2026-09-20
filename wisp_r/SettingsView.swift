@@ -43,10 +43,17 @@ struct SettingsView: View {
                     SettingsGroup {
                         sizeRow("Headers", selection: $settings.headerTextSize)
                         SettingsDivider()
-                        sizeRow("Editor", selection: $settings.editorTextSize)
-                        SettingsDivider()
-                        sizeRow("Notes", selection: $settings.noteTextSize)
+                        sizeRow("Editor & notes", selection: $settings.noteTextSize)
                     }
+
+                    SettingsSection(title: "WIDGET")
+                        .padding(.top, 34)
+
+                    SettingsGroup {
+                        widgetTapRow
+                    }
+
+                    caption(widgetTapCaption)
 
                     SettingsSection(title: "WIDGET TEXT SIZE")
                         .padding(.top, 34)
@@ -55,17 +62,23 @@ struct SettingsView: View {
                         sizeRow("Header", selection: $settings.widgetHeaderTextSize)
                         SettingsDivider()
                         sizeRow("Note list", selection: $settings.widgetNoteTextSize)
-                        SettingsDivider()
-                        sizeRow("Opened note", selection: $settings.widgetFocusTextSize)
+                        if settings.widgetNoteTap == .focusInWidget {
+                            SettingsDivider()
+                            sizeRow("Opened note", selection: $settings.widgetFocusTextSize)
+                        }
                     }
 
-                    caption("An opened note starts out larger, so its checklist is easy to tap.")
+                    if settings.widgetNoteTap == .focusInWidget {
+                        caption("An opened note starts out larger, so its checklist is easy to tap.")
+                    }
 
                     SettingsSection(title: "LOCATION")
                         .padding(.top, 34)
 
                     SettingsGroup {
                         locationTrackingRow
+                        SettingsDivider()
+                        mapNoteIconsRow
                     }
 
                     caption(locationCaption)
@@ -124,7 +137,7 @@ struct SettingsView: View {
                     Text(settings.displayTitle)
                         .font(.wispr(17))
                 }
-                .foregroundStyle(Color.white.opacity(0.6))
+                .foregroundStyle(Color.wisprInk.opacity(0.6))
             }
             .buttonStyle(.plain)
 
@@ -132,7 +145,7 @@ struct SettingsView: View {
 
             Text("Settings")
                 .font(.wispr(17, weight: .medium))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.wisprInk)
 
             Spacer()
 
@@ -159,7 +172,7 @@ struct SettingsView: View {
         HStack(spacing: 12) {
             TextField(AppSettings.fallbackTitle, text: $settings.title)
                 .font(.wispr(18))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.wisprInk)
                 .textInputAutocapitalization(.words)
                 .autocorrectionDisabled()
                 .submitLabel(.done)
@@ -187,7 +200,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(theme.title)
                         .font(.wispr(18))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.wisprInk)
 
                     Text(theme.blurb)
                         .font(.wispr(12))
@@ -204,6 +217,27 @@ struct SettingsView: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(settings.theme == theme ? [.isButton, .isSelected] : .isButton)
+    }
+
+    // MARK: - Widget
+
+    private var widgetTapRow: some View {
+        pickerRow("Tapping a note", value: settings.widgetNoteTap.title) {
+            Picker("Tapping a note", selection: $settings.widgetNoteTap) {
+                ForEach(WidgetNoteTap.allCases) { action in
+                    Text(action.title).tag(action)
+                }
+            }
+        }
+    }
+
+    private var widgetTapCaption: String {
+        switch settings.widgetNoteTap {
+        case .openInApp:
+            "Tapping a note opens it in Wispr, ready to edit."
+        case .focusInWidget:
+            "Tapping a note opens it on the Home Screen, where its checklist can be crossed off. Long notes are shortened to fit."
+        }
     }
 
     // MARK: - Text size
@@ -227,7 +261,7 @@ struct SettingsView: View {
         HStack {
             Text(title)
                 .font(.wispr(18))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.wisprInk)
 
             Spacer(minLength: 12)
 
@@ -240,7 +274,7 @@ struct SettingsView: View {
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.wispr(11, weight: .semibold))
                 }
-                .foregroundStyle(Color.white.opacity(0.75))
+                .foregroundStyle(Color.wisprInk.opacity(0.75))
             }
         }
         .padding(.horizontal, 20)
@@ -258,15 +292,24 @@ struct SettingsView: View {
             )
         )
         .font(.wispr(18))
-        .foregroundStyle(.white)
-        .tint(.white)
+        .foregroundStyle(Color.wisprInk)
+        .tint(Color.wisprInk)
         .padding(.horizontal, 20)
         .frame(height: 52)
     }
 
+    private var mapNoteIconsRow: some View {
+        Toggle("Note icons on maps", isOn: $settings.mapNoteIconsEnabled)
+            .font(.wispr(18))
+            .foregroundStyle(Color.wisprInk)
+            .tint(Color.wisprInk)
+            .padding(.horizontal, 20)
+            .frame(height: 52)
+    }
+
     private var locationCaption: String {
         guard settings.locationTrackingEnabled else {
-            return "Off by default. When enabled, trails stay on this device and are kept for 90 days."
+            return "Location trails are off. The note-icon setting also applies to locations already saved on notes."
         }
 
         switch locationHistory.authorizationStatus {
@@ -315,7 +358,7 @@ struct SettingsView: View {
 
                 Text(title)
                     .font(.wispr(17))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.wisprInk)
                     .lineLimit(1)
 
                 Spacer(minLength: 12)
@@ -371,7 +414,7 @@ struct SettingsView: View {
     private func checkmark(isOn: Bool) -> some View {
         Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
             .font(.wispr(17))
-            .foregroundStyle(isOn ? .white : Color.white.opacity(0.3))
+            .foregroundStyle(isOn ? Color.wisprInk : Color.wisprInk.opacity(0.3))
     }
 }
 

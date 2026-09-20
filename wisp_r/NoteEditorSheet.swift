@@ -23,6 +23,7 @@ struct NoteEditorSheet: View {
     /// to send it to another day.
     let onMove: (Date) -> Void
 
+    @State private var title: String
     @State private var text: AttributedString
     @State private var selection = AttributedTextSelection()
     @State private var attachments: [NoteAttachment]
@@ -41,6 +42,9 @@ struct NoteEditorSheet: View {
 
     @State private var isShowingMoveSheet = false
     @State private var isShowingScheduleSheet = false
+    @State private var isShowingTimelineSheet = false
+    /// The timeline picked in this session, written when the note is saved.
+    @State private var timelineID: UUID?
     /// The time set in this session, kept here until the note is saved.
     @State private var schedule: NoteSchedule?
     /// The day the event starts on, which may move off the note's current day.
@@ -57,6 +61,7 @@ struct NoteEditorSheet: View {
     @FocusState private var isEditorFocused: Bool
     @Environment(\.dismiss) private var dismiss
     @Environment(LocationHistory.self) private var locationHistory
+    @Environment(TimelineStore.self) private var timelines
 
     init(
         note: Note,
@@ -70,10 +75,12 @@ struct NoteEditorSheet: View {
         self.capturesCreationLocation = capturesCreationLocation
         self.onCommit = onCommit
         self.onMove = onMove
+        _title = State(initialValue: note.title ?? "")
         _text = State(initialValue: NoteMarkup.text(from: note.blocks))
         _attachments = State(initialValue: note.attachments)
         _schedule = State(initialValue: note.schedule)
         _scheduleDay = State(initialValue: day)
+        _timelineID = State(initialValue: note.timelineID)
     }
 
     var body: some View {
@@ -87,6 +94,14 @@ struct NoteEditorSheet: View {
                     onRemove: remove
                 )
             }
+
+            HStack(spacing: 10) {
+                NoteTitleField(title: $title)
+
+                timelineButton
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, mediaAttachments.isEmpty ? 16 : 12)
 
             if !documentAttachments.isEmpty {
                 DocumentAttachmentList(
@@ -108,13 +123,20 @@ struct NoteEditorSheet: View {
             }
 
             TextEditor(text: $text, selection: $selection)
-                .font(.wispr(17, role: .editor))
-                .foregroundStyle(.white)
+                .font(
+                    .wispr(
+                        NoteTextMetrics.bodySize * NoteTextMetrics.editorOpticalScale,
+                        role: .note
+                    )
+                )
+                .lineSpacing(NoteTextMetrics.lineSpacing)
+                .foregroundStyle(Color.wisprInk)
                 .scrollContentBackground(.hidden)
                 // Lets the keyboard — and with it the bar — be put away.
                 .scrollDismissesKeyboard(.interactively)
-                .padding(.horizontal, 14)
-                .padding(.top, mediaAttachments.isEmpty ? 16 : 8)
+                .padding(.horizontal, 24)
+                .padding(.top, 16)
+                .safeAreaPadding(.bottom, 42)
                 .focused($isEditorFocused)
                 .onChange(of: text) { oldValue, newValue in
                     continueList(from: oldValue, to: newValue)
@@ -122,7 +144,7 @@ struct NoteEditorSheet: View {
                     keyboardToolbar
                 }
         }
-        .background(WisprBackground())
+        .background { editorBackground.ignoresSafeArea(.all) }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 // Sharing one inset keeps memos structurally above the
@@ -132,9 +154,12 @@ struct NoteEditorSheet: View {
                 }
             }
         }
-        .tint(.white)
+        .tint(Color.wisprInk)
         // Opens over half the screen, and can be pulled the rest of the way up.
         .presentationDetents([.medium, .large])
+        // The presentation owns the area underneath the keyboard accessory;
+        // painting it here keeps the timeline wash continuous to that edge.
+        .presentationBackground { editorBackground }
         .wisprSheetEdge(cornerRadius: Self.cornerRadius)
         // Also saves when the sheet is swiped away rather than dismissed.
         .onDisappear(perform: save)
@@ -180,6 +205,11 @@ struct NoteEditorSheet: View {
                 pendingMove = destination
             }
         }
+        .sheet(isPresented: $isShowingTimelineSheet) {
+            NoteTimelineSheet(selection: timelineID) { picked in
+                withAnimation(.snappy) { timelineID = picked }
+            }
+        }
         .sheet(isPresented: $isShowingScheduleSheet) {
             NoteScheduleSheet(note: scheduledNote, day: scheduleDay) { newSchedule, startDay in
                 withAnimation(.snappy) {
@@ -195,42 +225,49 @@ struct NoteEditorSheet: View {
         }
     }
 
+    private var editorBackground: some View {
+        ZStack {
+            WisprBackground()
+            if let timeline = timelines.timeline(timelineID) {
+                timeline.tint.fill.opacity(0.38)
+            }
+        }
+    }
+
     // MARK: - Keyboard toolbar
 
     /// Sits directly above the keyboard: checklist and add actions on the left,
     /// keyboard dismissal centered, and finishing actions on the right.
     private var keyboardToolbar: ToolbarItemGroup<some View> {
         ToolbarItemGroup(placement: .keyboard) {
-        Button(action: toggleChecklist) {
-                    Image(systemName: "checklist")
-                        .frame(width: 44, height: 44)
+            Button(action: toggleChecklist) {
+                Image(systemName: "checklist")
             }
+            .accessibilityLabel("Toggle checklist")
 
-                addAttachmentMenu
-                    .frame(width: 44, height: 44)
+            addAttachmentMenu
 
-                calendarMenu
-                    .frame(width: 44, height: 44)
+            calendarMenu
 
             Button {
                 isEditorFocused = false
             } label: {
                 Image(systemName: "chevron.down")
-                    .frame(width: 44, height: 44)
             }
+            .accessibilityLabel("Dismiss keyboard")
 
-                Button(action: cancel) {
-                    Image(systemName: "xmark")
-                        .frame(width: 44, height: 44)
-                }
+            Button(action: cancel) {
+                Image(systemName: "xmark")
+            }
+            .accessibilityLabel("Cancel")
 
-                Button(action: saveAndDismiss) {
-                    Image(systemName: "checkmark")
-                        .fontWeight(.semibold)
-                        .frame(width: 44, height: 44)
-                }
+            Button(action: saveAndDismiss) {
+                Image(systemName: "checkmark")
+                    .fontWeight(.semibold)
+            }
+            .accessibilityLabel("Done")
+        }
     }
-}
 
     /// Sending the note to another day, or giving it a time on this one.
     private var calendarMenu: some View {
@@ -248,9 +285,46 @@ struct NoteEditorSheet: View {
             }
         } label: {
             Image(systemName: "calendar")
-                .frame(width: 44, height: 44)
         }
         .accessibilityLabel("Schedule note")
+    }
+
+    // MARK: - Timeline
+
+    /// Sits beside the title: the timeline the note is filed under, or an
+    /// invitation to file it under one.
+    private var timelineButton: some View {
+        Button {
+            present { isShowingTimelineSheet = true }
+        } label: {
+            Group {
+                if let timeline = timelines.timeline(timelineID) {
+                    HStack(spacing: 6) {
+                        TimelineMark(timeline: timeline, size: 22)
+
+                        Text(timeline.displayName)
+                            .font(.wispr(14))
+                            .foregroundStyle(Color.wisprOnAccent)
+                            .lineLimit(1)
+                    }
+                    .padding(.leading, 5)
+                    .padding(.trailing, 10)
+                    .frame(height: 32)
+                    .background(timeline.tint.fill, in: Capsule())
+                } else {
+                    Image(systemName: "tag")
+                        .font(.wispr(16))
+                        .foregroundStyle(Color.wisprInk.opacity(0.6))
+                        .frame(width: 32, height: 32)
+                        .wisprCardBackground(cornerRadius: 16)
+                }
+            }
+            // Never at the title's expense: the field keeps the room it needs.
+            .fixedSize()
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Timeline")
+        .accessibilityValue(timelines.timeline(timelineID)?.displayName ?? "None")
     }
 
     /// Puts the keyboard away first, so the sheet isn't pushed up by it.
@@ -307,7 +381,6 @@ struct NoteEditorSheet: View {
             }
         } label: {
             Image(systemName: "plus")
-                .frame(width: 44, height: 44)
         }
         .accessibilityLabel("Add attachment")
     }
@@ -356,14 +429,14 @@ struct NoteEditorSheet: View {
             Text(recorder.formattedElapsed)
                 .font(.wispr(13, weight: .medium))
                 .monospacedDigit()
-                .foregroundStyle(Color.white.opacity(0.7))
+                .foregroundStyle(Color.wisprInk.opacity(0.7))
 
             Button {
                 recorder.cancel()
             } label: {
                 Image(systemName: "xmark")
                     .font(.wispr(14))
-                    .foregroundStyle(Color.white.opacity(0.7))
+                    .foregroundStyle(Color.wisprInk.opacity(0.7))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Discard recording")
@@ -373,14 +446,14 @@ struct NoteEditorSheet: View {
                     .font(.wispr(14))
                     .foregroundStyle(.black)
                     .frame(width: 34, height: 34)
-                    .background(.white, in: Circle())
+                    .background(Color.wisprInk, in: Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Stop recording")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .background(Color.white.opacity(0.04))
+        .background(Color.wisprInk.opacity(0.04))
         .background(alignment: .top) {
             Rectangle()
                 .fill(Color.wisprSeparator)
@@ -527,9 +600,12 @@ struct NoteEditorSheet: View {
         hasFinished = true
 
         var updated = note
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.title = trimmedTitle.isEmpty ? nil : trimmedTitle
         updated.blocks = NoteMarkup.blocks(from: text)
         updated.attachments = attachments
         updated.schedule = schedule
+        updated.timelineID = timelineID
         if capturesCreationLocation, updated.location == nil {
             updated.location = locationHistory.locationForNewNote()
         }
@@ -644,14 +720,22 @@ struct NoteEditorSheet: View {
             for edit in edits.reversed() {
                 let lower = updated.index(atCharacterOffset: edit.start)
                 let upper = updated.index(atCharacterOffset: edit.start + edit.length)
-                updated.replaceSubrange(lower..<upper, with: AttributedString(edit.replacement))
+                updated.replaceSubrange(
+                    lower..<upper,
+                    with: NoteMarkup.applyingEditorMarkerStyle(to: AttributedString(edit.replacement))
+                )
             }
+            updated = NoteMarkup.applyingEditorMarkerStyle(to: updated)
         }
     }
 
     private func insert(_ string: String, at offset: Int) {
         text.transform(updating: &selection) { updated in
-            updated.insert(AttributedString(string), at: updated.index(atCharacterOffset: offset))
+            updated.insert(
+                NoteMarkup.applyingEditorMarkerStyle(to: AttributedString(string)),
+                at: updated.index(atCharacterOffset: offset)
+            )
+            updated = NoteMarkup.applyingEditorMarkerStyle(to: updated)
         }
     }
 
@@ -660,6 +744,7 @@ struct NoteEditorSheet: View {
             let lower = updated.index(atCharacterOffset: offset)
             let upper = updated.index(atCharacterOffset: offset + count)
             updated.removeSubrange(lower..<upper)
+            updated = NoteMarkup.applyingEditorMarkerStyle(to: updated)
         }
     }
 
@@ -768,7 +853,7 @@ private struct MediaCarousel: View {
             if attachments.count > 1 {
                 Text("\(attachments.count) items")
                     .font(.wispr(12, weight: .medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.wisprInk)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
                     .background(.black.opacity(0.4), in: Capsule())
@@ -815,6 +900,25 @@ private struct DocumentAttachmentList: View {
     }
 }
 
+private struct NoteTitleField: View {
+    @Binding var title: String
+
+    var body: some View {
+        TextField("Title", text: $title)
+            .font(
+                .wispr(
+                    NoteTextMetrics.titleSize * NoteTextMetrics.editorOpticalScale,
+                    weight: .semibold,
+                    role: .note
+                )
+            )
+            .foregroundStyle(Color.wisprInk)
+            .textInputAutocapitalization(.sentences)
+            .submitLabel(.next)
+            .accessibilityLabel("Note title")
+    }
+}
+
 struct DocumentAttachmentRow: View {
     let attachment: NoteAttachment
 
@@ -822,13 +926,13 @@ struct DocumentAttachmentRow: View {
         HStack(spacing: 12) {
             Image(systemName: attachment.symbolName)
                 .font(.wispr(18))
-                .foregroundStyle(Color.white.opacity(0.75))
+                .foregroundStyle(Color.wisprInk.opacity(0.75))
                 .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(attachment.displayName)
                     .font(.wispr(15))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.wisprInk)
                     .lineLimit(1)
                     .truncationMode(.middle)
 

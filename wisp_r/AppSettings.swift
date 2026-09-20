@@ -63,14 +63,25 @@ final class AppSettings {
         didSet { defaults.set(locationTrackingEnabled, forKey: Key.locationTrackingEnabled) }
     }
 
+    /// Whether notes with saved locations appear as callouts around the day map.
+    var mapNoteIconsEnabled: Bool {
+        didSet { defaults.set(mapNoteIconsEnabled, forKey: Key.mapNoteIconsEnabled) }
+    }
+
+    /// What a tap on a note in the widget does.
+    var widgetNoteTap: WidgetNoteTap {
+        didSet {
+            defaults.set(widgetNoteTap.rawValue, forKey: Key.widgetNoteTap)
+            #if os(iOS)
+            WidgetCenter.shared.reloadTimelines(ofKind: TodayWidgetSnapshotPublisher.widgetKind)
+            #endif
+        }
+    }
+
     // MARK: Text sizes
 
     var headerTextSize: WisprTextSize {
         didSet { defaults.set(headerTextSize.rawValue, forKey: Key.headerTextSize) }
-    }
-
-    var editorTextSize: WisprTextSize {
-        didSet { defaults.set(editorTextSize.rawValue, forKey: Key.editorTextSize) }
     }
 
     var noteTextSize: WisprTextSize {
@@ -96,8 +107,7 @@ final class AppSettings {
         switch role {
         case .interface: .standard
         case .header: headerTextSize
-        case .editor: editorTextSize
-        case .note: noteTextSize
+        case .editor, .note: noteTextSize
         }
     }
 
@@ -124,9 +134,11 @@ final class AppSettings {
         let minutes = defaults.integer(forKey: Key.eventMinutes)
         eventMinutes = Self.eventLengths.contains(minutes) ? minutes : 60
         locationTrackingEnabled = defaults.bool(forKey: Key.locationTrackingEnabled)
+        mapNoteIconsEnabled = defaults.object(forKey: Key.mapNoteIconsEnabled) as? Bool ?? true
+        widgetNoteTap = WidgetNoteTap(rawValue: defaults.string(forKey: Key.widgetNoteTap) ?? "")
+            ?? .openInApp
 
         headerTextSize = Self.textSize(in: defaults, forKey: Key.headerTextSize)
-        editorTextSize = Self.textSize(in: defaults, forKey: Key.editorTextSize)
         noteTextSize = Self.textSize(in: defaults, forKey: Key.noteTextSize)
         widgetHeaderTextSize = Self.textSize(in: defaults, forKey: Key.widgetHeaderTextSize)
         widgetNoteTextSize = Self.textSize(in: defaults, forKey: Key.widgetNoteTextSize)
@@ -159,8 +171,9 @@ final class AppSettings {
         static let calendarID = "defaultCalendarID"
         static let eventMinutes = "defaultEventMinutes"
         static let locationTrackingEnabled = "locationTrackingEnabled"
+        static let mapNoteIconsEnabled = "mapNoteIconsEnabled"
+        static let widgetNoteTap = "widgetNoteTap"
         static let headerTextSize = "headerTextSize"
-        static let editorTextSize = "editorTextSize"
         static let noteTextSize = "noteTextSize"
         static let widgetHeaderTextSize = "widgetHeaderTextSize"
         static let widgetNoteTextSize = "widgetNoteTextSize"
@@ -185,6 +198,23 @@ extension AppSettings {
     }
 }
 #endif
+
+/// What happens when a note is tapped in the widget.
+enum WidgetNoteTap: String, CaseIterable, Identifiable, Sendable {
+    /// Opens the app on that note, ready to edit.
+    case openInApp
+    /// Opens the note inside the widget, without leaving the Home Screen.
+    case focusInWidget
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .openInApp: "Opens in the app"
+        case .focusInWidget: "Opens in the widget"
+        }
+    }
+}
 
 /// "1 hour", "45 minutes" — how a default event length reads.
 extension Int {

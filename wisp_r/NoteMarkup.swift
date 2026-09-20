@@ -1,5 +1,10 @@
 import Foundation
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 /// Translates between ``NoteBlock`` values and the marker-prefixed text the
 /// editor works with.
@@ -8,8 +13,8 @@ import SwiftUI
 /// marker sets the list kind. Keeping the structure in the text itself is what
 /// lets a single `TextEditor` offer Notes-style lists.
 enum NoteMarkup {
-    static let unchecked = "○ "
-    static let checked = "✓ "
+    static let unchecked = "☐ "
+    static let checked = "☑ "
     static let bullet = "• "
     static let indentUnit = "\t"
     static let maxIndent = 4
@@ -106,7 +111,58 @@ enum NoteMarkup {
             result += block.text
         }
 
-        return result
+        return applyingEditorMarkerStyle(to: result)
+    }
+
+    /// Gives checklist glyphs the same footprint as the drawn mark on a day
+    /// card while leaving the editable text at the shared body size.
+    static func applyingEditorMarkerStyle(to value: AttributedString) -> AttributedString {
+        var styled = value
+        // Clear editor-only layout left over after changing a checklist back
+        // into a paragraph. Rich character formatting remains untouched.
+        styled[styled.startIndex..<styled.endIndex].lineHeight = nil
+
+        let plainText = String(styled.characters)
+        let native = NSMutableAttributedString(attributedString: NSAttributedString(styled))
+        native.removeAttribute(.paragraphStyle, range: NSRange(location: 0, length: native.length))
+        var lineStart = 0
+
+        for line in plainText.split(separator: "\n", omittingEmptySubsequences: false) {
+            let parsed = parseLine(String(line))
+            if parsed.marker == .unchecked || parsed.marker == .checked {
+                let start = plainText.index(plainText.startIndex, offsetBy: lineStart)
+                let end = plainText.index(start, offsetBy: line.count)
+                let range = NSRange(start..<end, in: plainText)
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.firstLineHeadIndent = 0
+                paragraph.headIndent = CGFloat(parsed.indent) * NoteTextMetrics.indentWidth
+                    + NoteTextMetrics.editorChecklistAdvance
+                paragraph.defaultTabInterval = NoteTextMetrics.indentWidth
+                paragraph.paragraphSpacingBefore = NoteTextMetrics.checklistVerticalPadding
+                paragraph.paragraphSpacing = NoteTextMetrics.checklistVerticalPadding
+                native.addAttribute(.paragraphStyle, value: paragraph, range: range)
+            }
+            lineStart += line.count + 1
+        }
+
+        styled = AttributedString(native)
+
+        lineStart = 0
+        for line in plainText.split(separator: "\n", omittingEmptySubsequences: false) {
+            let parsed = parseLine(String(line))
+            if parsed.marker == .unchecked || parsed.marker == .checked {
+                let markerOffset = lineStart + parsed.indent
+                let lower = styled.index(atCharacterOffset: markerOffset)
+                let upper = styled.index(atCharacterOffset: markerOffset + 1)
+                styled[lower..<upper].font = .system(
+                    size: NoteTextMetrics.editorChecklistMarkSize
+                        * AppSettings.shared.textSize(for: .note).scale
+                )
+            }
+            lineStart += line.count + 1
+        }
+
+        return styled
     }
 
     // MARK: - Text to blocks

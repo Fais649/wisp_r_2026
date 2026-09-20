@@ -44,7 +44,7 @@ struct MoveNotesSheet: View {
                     )
                     .datePickerStyle(.graphical)
                     .labelsHidden()
-                    .tint(.white)
+                    .tint(Color.wisprInk)
 
                     dayPreview
                 }
@@ -80,7 +80,7 @@ struct MoveNotesSheet: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(DayFormat.relativeTitle(for: chosenDay))
                     .font(.wispr(17, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.wisprInk)
 
                 Text(DayFormat.dateSubtitle(for: chosenDay))
                     .font(.wispr(13))
@@ -128,13 +128,13 @@ struct NoteSummaryRow: View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Image(systemName: note.previewSymbol)
                 .font(.wispr(14))
-                .foregroundStyle(Color.white.opacity(0.55))
+                .foregroundStyle(Color.wisprInk.opacity(0.55))
                 .frame(width: 18)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(note.summaryLine)
                     .font(.wispr(15))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.wisprInk)
                     .lineLimit(1)
 
                 if let schedule = note.schedule {

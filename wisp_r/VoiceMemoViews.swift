@@ -17,8 +17,8 @@ struct WaveformView: View {
                     Capsule()
                         .fill(
                             Double(index) / Double(bars.count) <= progress
-                                ? Color.white
-                                : Color.white.opacity(0.28)
+                                ? Color.wisprInk
+                                : Color.wisprInk.opacity(0.28)
                         )
                         .frame(
                             width: barWidth,
@@ -57,14 +57,14 @@ struct VoiceMemoView: View {
             } else if let transcriptionError {
                 Text(transcriptionError)
                     .font(.wispr(12))
-                    .foregroundStyle(Color.white.opacity(0.5))
+                    .foregroundStyle(Color.wisprInk.opacity(0.5))
             }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(
-            .regular.tint(Color.white.opacity(0.08)),
+            .regular.tint(Color.wisprInk.opacity(0.08)),
             in: .rect(cornerRadius: 18)
         )
         .padding(.horizontal, 8)
@@ -82,7 +82,7 @@ struct VoiceMemoView: View {
                     .font(.wispr(15))
                     .foregroundStyle(.black)
                     .frame(width: 34, height: 34)
-                    .background(.white, in: Circle())
+                    .background(Color.wisprInk, in: Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(player.isPlaying(attachment) ? "Pause memo" : "Play memo")
@@ -94,14 +94,14 @@ struct VoiceMemoView: View {
             Text(timeLabel)
                 .font(.wispr(13, weight: .medium))
                 .monospacedDigit()
-                .foregroundStyle(Color.white.opacity(0.7))
+                .foregroundStyle(Color.wisprInk.opacity(0.7))
 
             Button {
                 player.reset(attachment)
             } label: {
                 Image(systemName: "arrow.counterclockwise")
                     .font(.wispr(14))
-                    .foregroundStyle(Color.white.opacity(0.7))
+                    .foregroundStyle(Color.wisprInk.opacity(0.7))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Restart memo")
@@ -120,12 +120,12 @@ struct VoiceMemoView: View {
         if isTranscribing {
             ProgressView()
                 .controlSize(.small)
-                .tint(.white)
+                .tint(Color.wisprInk)
         } else if attachment.transcript == nil {
             Button(action: onTranscribe) {
                 Image(systemName: "text.viewfinder")
                     .font(.wispr(15))
-                    .foregroundStyle(Color.white.opacity(0.7))
+                    .foregroundStyle(Color.wisprInk.opacity(0.7))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Transcribe memo")
@@ -163,7 +163,7 @@ private struct TranscriptView: View {
 
             Text(transcript)
                 .font(Self.font)
-                .foregroundStyle(Color.white.opacity(0.85))
+                .foregroundStyle(Color.wisprInk.opacity(0.85))
                 .lineLimit(isExpanded ? nil : Self.collapsedLineLimit)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)

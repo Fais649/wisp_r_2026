@@ -303,7 +303,7 @@ final class CalendarSync {
             } else if let note = unlinkedNote(title: title, schedule: imported.schedule, on: imported.day, in: store) {
                 apply(event, title: title, imported: imported, to: note, forceLink: true, store: store)
             } else {
-                var note = Note(blocks: [NoteBlock(text: AttributedString(title))])
+                var note = Note(title: title)
                 note.schedule = imported.schedule
                 note.calendarEventID = id
                 note.calendarOccurrence = occurrence

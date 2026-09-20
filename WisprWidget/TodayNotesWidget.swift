@@ -6,6 +6,7 @@ private enum WidgetBridge {
     static let appGroup = "group.com.punksys.wispr"
     static let filename = "TodayWidgetSnapshot.json"
     static let actionsFilename = "TodayWidgetActions.json"
+    static let timelinesFilename = "TodayWidgetTimelines.json"
     static let kind = "TodayNotesWidget"
 
     static func sharedFile(_ name: String) -> URL? {
@@ -23,6 +24,21 @@ private enum WidgetBridge {
 private enum WidgetLink {
     static let today = URL(string: "wispr://today")
     static let newNote = URL(string: "wispr://new")
+
+    static func note(_ id: UUID) -> URL? {
+        URL(string: "wispr://note/\(id.uuidString)")
+    }
+}
+
+/// What a tap on a note does, as chosen in the app's settings.
+private enum WidgetNoteTap: String {
+    case openInApp
+    case focusInWidget
+
+    static var current: WidgetNoteTap {
+        let stored = WidgetBridge.sharedDefaults?.string(forKey: "widgetNoteTap") ?? ""
+        return WidgetNoteTap(rawValue: stored) ?? .openInApp
+    }
 }
 
 // MARK: - Theme
@@ -33,6 +49,7 @@ private enum WidgetLink {
 private enum WidgetTheme: String {
     case standard
     case legacy
+    case newspaper
 
     static var current: WidgetTheme {
         let stored = WidgetBridge.sharedDefaults?.string(forKey: "theme") ?? ""
@@ -46,6 +63,8 @@ private enum WidgetTheme: String {
         case .legacy:
             // One weight, two sizes: a bitmap face has nothing else to give.
             .custom(size < 15 ? "GohuFont11NFM" : "GohuFont14NFM", size: size * 1.02)
+        case .newspaper:
+            .system(size: size, weight: weight, design: .serif)
         }
     }
 
@@ -53,21 +72,42 @@ private enum WidgetTheme: String {
     func clockFont(_ size: CGFloat) -> Font {
         switch self {
         case .standard: .system(size: size, weight: .semibold, design: .rounded)
-        case .legacy: font(size, weight: .semibold)
+        case .legacy, .newspaper: font(size, weight: .semibold)
         }
     }
 
+    var ink: Color {
+        switch self {
+        case .standard, .legacy: .white
+        case .newspaper: Color(red: 0.11, green: 0.10, blue: 0.09)
+        }
+    }
+
+    var onAccent: Color { .white }
+
     var separator: Color {
-        Color.white.opacity(self == .legacy ? 0.18 : 0.09)
+        switch self {
+        case .standard: ink.opacity(0.09)
+        case .legacy: ink.opacity(0.18)
+        case .newspaper: ink.opacity(0.28)
+        }
     }
 
     var border: Color {
-        Color.white.opacity(self == .legacy ? 0.22 : 0.16)
+        switch self {
+        case .standard: ink.opacity(0.16)
+        case .legacy: ink.opacity(0.22)
+        case .newspaper: ink.opacity(0.3)
+        }
     }
 
     /// Legacy draws its buttons rather than filling them.
     var buttonFill: Color {
-        Color.white.opacity(self == .legacy ? 0.0 : 0.12)
+        switch self {
+        case .standard: ink.opacity(0.12)
+        case .legacy: .clear
+        case .newspaper: ink.opacity(0.06)
+        }
     }
 
     /// Round in the default theme, square-ish in legacy.
@@ -75,6 +115,43 @@ private enum WidgetTheme: String {
         switch self {
         case .standard: AnyShape(Circle())
         case .legacy: AnyShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        case .newspaper: AnyShape(Rectangle())
+        }
+    }
+
+    /// The checklist box, drawn the way the app draws it.
+    var markShape: AnyShape {
+        switch self {
+        case .standard: AnyShape(Circle())
+        case .legacy, .newspaper: AnyShape(Rectangle())
+        }
+    }
+
+    /// The surface a note card sits on. The widget has no glass, so the default
+    /// theme fills a little more strongly than the app's card does.
+    var cardFill: Color {
+        switch self {
+        case .standard: ink.opacity(0.09)
+        case .legacy: ink.opacity(0.03)
+        case .newspaper: Color(red: 0.97, green: 0.96, blue: 0.93)
+        }
+    }
+
+    /// Legacy draws boxes rather than filling them.
+    var cardBorder: Color? {
+        switch self {
+        case .standard: nil
+        case .legacy: ink.opacity(0.22)
+        case .newspaper: ink.opacity(0.26)
+        }
+    }
+
+    /// Legacy keeps its corners nearly square.
+    func cardRadius(_ requested: CGFloat) -> CGFloat {
+        switch self {
+        case .standard: requested
+        case .legacy: min(requested, 4)
+        case .newspaper: 0
         }
     }
 
@@ -83,6 +160,7 @@ private enum WidgetTheme: String {
         switch self {
         case .standard: Color(red: 0.19, green: 0.185, blue: 0.195)
         case .legacy: .black
+        case .newspaper: Color(red: 0.94, green: 0.93, blue: 0.89)
         }
     }
 
@@ -100,6 +178,15 @@ private enum WidgetTheme: String {
             )
         case .legacy:
             Color.black
+        case .newspaper:
+            LinearGradient(
+                colors: [
+                    Color(red: 0.94, green: 0.93, blue: 0.89),
+                    Color(red: 0.91, green: 0.89, blue: 0.84)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
         }
     }
 }
@@ -143,18 +230,40 @@ private struct WidgetSnapshot: Decodable {
 
 private struct WidgetNote: Decodable, Identifiable {
     let id: UUID
+    /// Missing from snapshots written before notes carried a heading.
+    var title: String?
     var blocks: [WidgetBlock]
     let schedule: String?
     let imageCount: Int
     let voiceMemoCount: Int
+    /// The timeline the note is filed under, looked up in the entry's map.
+    var timelineID: UUID?
 
     var hasMeta: Bool { schedule != nil || imageCount > 0 || voiceMemoCount > 0 }
 
-    /// The note as one run of text, for the day's list.
+    var checkedItems: [WidgetBlock] { blocks.filter { $0.isChecklistItem && $0.isChecked } }
+    /// Everything still worth reading: the note's words, minus what has been
+    /// crossed off.
+    var openLines: [WidgetBlock] { blocks.filter { !($0.isChecklistItem && $0.isChecked) } }
+    var openItemCount: Int { blocks.filter { $0.isChecklistItem && !$0.isChecked }.count }
+
+    /// The note read aloud in one run, for the card's accessibility label.
     var summary: String {
-        guard !blocks.isEmpty else { return "Attachment" }
-        return blocks.map(\.listLine).joined(separator: "\n")
+        let lines = [title].compactMap { $0 } + blocks.map(\.listLine)
+        guard !lines.isEmpty else { return "Attachment" }
+        return lines.joined(separator: "\n")
     }
+}
+
+/// A timeline as the widget needs it, published by the app beside the notes.
+private struct WidgetTimeline: Decodable {
+    let name: String
+    let icon: String
+    let red: Double
+    let green: Double
+    let blue: Double
+
+    var color: Color { Color(red: red, green: green, blue: blue) }
 }
 
 private struct WidgetBlock: Decodable, Identifiable {
@@ -199,6 +308,17 @@ private struct WidgetBlock: Decodable, Identifiable {
 private enum WidgetFocus {
     private static let noteKey = "focusedNoteID"
     private static let sinceKey = "focusedSince"
+    private static let checkedKey = "focusedShowsChecked"
+
+    /// Whether the focused note is showing what has been crossed off rather
+    /// than what is left to do.
+    static var showsChecked: Bool {
+        WidgetBridge.sharedDefaults?.bool(forKey: checkedKey) ?? false
+    }
+
+    static func setShowsChecked(_ showsChecked: Bool) {
+        WidgetBridge.sharedDefaults?.set(showsChecked, forKey: checkedKey)
+    }
 
     /// The widget finds its way back to the day by itself, so a note left
     /// focused doesn't hide today for good.
@@ -206,6 +326,8 @@ private enum WidgetFocus {
 
     static func set(_ noteID: UUID?) {
         guard let defaults = WidgetBridge.sharedDefaults else { return }
+        // Every note opens on what is still to be done.
+        defaults.removeObject(forKey: checkedKey)
 
         guard let noteID else {
             defaults.removeObject(forKey: noteKey)
@@ -311,6 +433,27 @@ struct ShowWidgetTodayIntent: AppIntent {
     }
 }
 
+/// Swaps a focused note between what is left to do and what has been crossed
+/// off, so neither list has to share the widget with the other.
+struct ShowWidgetCrossedOffIntent: AppIntent {
+    static let title: LocalizedStringResource = "Show Crossed-Off Items"
+    static let isDiscoverable = false
+
+    @Parameter(title: "Crossed Off") var showsChecked: Bool
+
+    init() {}
+
+    init(showsChecked: Bool) {
+        self.showsChecked = showsChecked
+    }
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        WidgetFocus.setShowsChecked(showsChecked)
+        return .result()
+    }
+}
+
 /// Crosses a checklist item off, or back on.
 struct ToggleWidgetChecklistItemIntent: AppIntent {
     static let title: LocalizedStringResource = "Cross Off a Checklist Item"
@@ -349,22 +492,48 @@ private struct TodayNotesEntry: TimelineEntry {
     var focusedNoteID: UUID?
     var theme: WidgetTheme = .standard
     var type = WidgetTypeScale()
+    /// Every timeline the app knows of, by id.
+    var timelines: [String: WidgetTimeline] = [:]
+    /// Set while the focused note is showing what has been crossed off.
+    var showsChecked = false
+    /// What a tap on a note does.
+    var noteTap: WidgetNoteTap = .openInApp
 
     var focusedNote: WidgetNote? {
         guard let focusedNoteID else { return nil }
         return notes.first { $0.id == focusedNoteID }
     }
+
+    /// The timeline a note is filed under, if it still exists.
+    func timeline(of note: WidgetNote) -> WidgetTimeline? {
+        guard let id = note.timelineID else { return nil }
+        return timelines[id.uuidString]
+    }
 }
 
 private struct TodayNotesProvider: TimelineProvider {
     func placeholder(in context: Context) -> TodayNotesEntry {
-        TodayNotesEntry(date: .now, notes: Self.previewNotes, theme: .current, type: .current)
+        TodayNotesEntry(
+            date: .now,
+            notes: Self.previewNotes,
+            theme: .current,
+            type: .current,
+            timelines: Self.previewTimelines
+        )
     }
 
     func getSnapshot(in context: Context, completion: @escaping (TodayNotesEntry) -> Void) {
         let now = Date.now
         guard !context.isPreview else {
-            completion(TodayNotesEntry(date: now, notes: Self.previewNotes, theme: .current, type: .current))
+            completion(
+                TodayNotesEntry(
+                    date: now,
+                    notes: Self.previewNotes,
+                    theme: .current,
+                    type: .current,
+                    timelines: Self.previewTimelines
+                )
+            )
             return
         }
 
@@ -374,7 +543,10 @@ private struct TodayNotesProvider: TimelineProvider {
                 notes: Self.loadNotes(for: now),
                 focusedNoteID: WidgetFocus.current(at: now)?.id,
                 theme: .current,
-                type: .current
+                type: .current,
+                timelines: Self.loadTimelines(),
+                showsChecked: WidgetFocus.showsChecked,
+                noteTap: .current
             )
         )
     }
@@ -385,17 +557,46 @@ private struct TodayNotesProvider: TimelineProvider {
         let focus = WidgetFocus.current(at: now)
         let theme = WidgetTheme.current
         let type = WidgetTypeScale.current
+        let timelines = Self.loadTimelines()
+        let noteTap = WidgetNoteTap.current
         let midnight = Self.nextMidnight(after: now)
 
         var entries = [
-            TodayNotesEntry(date: now, notes: notes, focusedNoteID: focus?.id, theme: theme, type: type)
+            TodayNotesEntry(
+                date: now,
+                notes: notes,
+                focusedNoteID: focus?.id,
+                theme: theme,
+                type: type,
+                timelines: timelines,
+                showsChecked: WidgetFocus.showsChecked,
+                noteTap: noteTap
+            )
         ]
         // A second entry drops the focus again on its own.
         if let focus, focus.expiry < midnight {
-            entries.append(TodayNotesEntry(date: focus.expiry, notes: notes, theme: theme, type: type))
+            entries.append(
+                TodayNotesEntry(
+                    date: focus.expiry,
+                    notes: notes,
+                    theme: theme,
+                    type: type,
+                    timelines: timelines,
+                    noteTap: noteTap
+                )
+            )
         }
 
         completion(Timeline(entries: entries, policy: .after(midnight)))
+    }
+
+    private static func loadTimelines() -> [String: WidgetTimeline] {
+        guard let fileURL = WidgetBridge.sharedFile(WidgetBridge.timelinesFilename),
+              let data = try? Data(contentsOf: fileURL),
+              let timelines = try? JSONDecoder().decode([String: WidgetTimeline].self, from: data)
+        else { return [:] }
+
+        return timelines
     }
 
     private static func loadNotes(for date: Date) -> [WidgetNote] {
@@ -445,36 +646,84 @@ private struct TodayNotesProvider: TimelineProvider {
             .addingTimeInterval(5)
     }
 
+    private static let programmingID = UUID()
+    private static let friendsID = UUID()
+
+    static let previewTimelines: [String: WidgetTimeline] = [
+        programmingID.uuidString: WidgetTimeline(
+            name: "Programming",
+            icon: "chevron.left.forwardslash.chevron.right",
+            red: 0.44,
+            green: 0.39,
+            blue: 0.27
+        ),
+        friendsID.uuidString: WidgetTimeline(
+            name: "Friends",
+            icon: "person.2.fill",
+            red: 0.42,
+            green: 0.23,
+            blue: 0.28
+        )
+    ]
+
+    /// A note long enough to need both the cap and the crossed-off button.
+    static let previewLongNote = WidgetNote(
+        id: UUID(),
+        title: "Prototype enhancements",
+        blocks: [
+            WidgetBlock(id: UUID(), text: "photo sync", kind: "checklist", isChecked: false, number: nil, indent: 0),
+            WidgetBlock(id: UUID(), text: "ipod scrollwheel/dial style date navigation prototype", kind: "checklist", isChecked: false, number: nil, indent: 0),
+            WidgetBlock(id: UUID(), text: "share sheet", kind: "checklist", isChecked: false, number: nil, indent: 0),
+            WidgetBlock(id: UUID(), text: "add timelines", kind: "checklist", isChecked: false, number: nil, indent: 0),
+            WidgetBlock(id: UUID(), text: "zooming into map reveals note content like on an infinite canvas", kind: "checklist", isChecked: false, number: nil, indent: 0),
+            WidgetBlock(id: UUID(), text: "multiline checklist item should indent all lines", kind: "checklist", isChecked: true, number: nil, indent: 0),
+            WidgetBlock(id: UUID(), text: "drag to reorder note order", kind: "checklist", isChecked: true, number: nil, indent: 0),
+            WidgetBlock(id: UUID(), text: "better checkbox icons (bigger, more distinct)", kind: "checklist", isChecked: true, number: nil, indent: 0),
+            WidgetBlock(id: UUID(), text: "light floating animations on icons like they drifting in space", kind: "checklist", isChecked: true, number: nil, indent: 0),
+            WidgetBlock(id: UUID(), text: "move note icons to outside circle and have thin line point to map location", kind: "checklist", isChecked: true, number: nil, indent: 0)
+        ],
+        schedule: nil,
+        imageCount: 0,
+        voiceMemoCount: 0,
+        timelineID: programmingID
+    )
+
     static let previewNotes = [
         WidgetNote(
             id: UUID(),
+            title: "Today’s widget pass",
             blocks: [
                 WidgetBlock(id: UUID(), text: "Sketch the Today widget", kind: "paragraph", isChecked: false, number: nil, indent: 0),
-                WidgetBlock(id: UUID(), text: "Test long notes on a small phone", kind: "checklist", isChecked: false, number: nil, indent: 0),
+                WidgetBlock(id: UUID(), text: "Test long notes on a small phone, the kind that wrap onto a second line", kind: "checklist", isChecked: false, number: nil, indent: 0),
                 WidgetBlock(id: UUID(), text: "Check the empty day", kind: "checklist", isChecked: false, number: nil, indent: 0),
                 WidgetBlock(id: UUID(), text: "Read the widget guidelines", kind: "checklist", isChecked: true, number: nil, indent: 0)
             ],
             schedule: "Due by 11:30 AM",
             imageCount: 2,
-            voiceMemoCount: 0
+            voiceMemoCount: 0,
+            timelineID: programmingID
         ),
         WidgetNote(
             id: UUID(),
+            title: "Dinner ideas",
             blocks: [
                 WidgetBlock(id: UUID(), text: "Dinner ideas for the weekend", kind: "paragraph", isChecked: false, number: nil, indent: 0)
             ],
             schedule: nil,
             imageCount: 0,
-            voiceMemoCount: 1
+            voiceMemoCount: 1,
+            timelineID: friendsID
         ),
         WidgetNote(
             id: UUID(),
+            title: "Ship it",
             blocks: [
                 WidgetBlock(id: UUID(), text: "Send the updated build", kind: "checklist", isChecked: true, number: nil, indent: 0)
             ],
             schedule: nil,
             imageCount: 0,
-            voiceMemoCount: 0
+            voiceMemoCount: 0,
+            timelineID: nil
         )
     ]
 }
@@ -495,9 +744,6 @@ private struct TodayNotesWidgetView: View {
         theme.font(size * entry.type.list, weight: weight)
     }
 
-    private func detailFont(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        theme.font(size * entry.type.detail, weight: weight)
-    }
     private var focused: WidgetNote? { entry.focusedNote }
     private var isEmpty: Bool { entry.notes.isEmpty }
 
@@ -511,23 +757,27 @@ private struct TodayNotesWidgetView: View {
                 // Nothing to list, so the day itself fills the widget.
                 clockAndCalendar
             } else {
+                // Richest first, and the first that fits wins: the day gives up
+                // detail on every note before it gives up a note.
                 ViewThatFits(in: .vertical) {
-                    noteList(limit: 8)
-                    noteList(limit: 7)
-                    noteList(limit: 6)
-                    noteList(limit: 5)
-                    noteList(limit: 4)
-                    noteList(limit: 3)
-                    noteList(limit: 2)
-                    noteList(limit: 1)
+                    noteList(limit: 8, blocks: 4)
+                    noteList(limit: 8, blocks: 2)
+                    noteList(limit: 8, blocks: 1)
+                    noteList(limit: 8, blocks: 0)
+                    noteList(limit: 6, blocks: 0)
+                    noteList(limit: 5, blocks: 0)
+                    noteList(limit: 4, blocks: 0)
+                    noteList(limit: 3, blocks: 0)
+                    noteList(limit: 2, blocks: 0)
+                    noteList(limit: 1, blocks: 0)
                 }
                 .frame(maxHeight: .infinity, alignment: .top)
             }
 
-            newNoteButton
+            bottomBar
         }
         .padding(18)
-        .foregroundStyle(.white)
+        .foregroundStyle(theme.ink)
         .containerBackground(for: .widget) {
             theme.background
         }
@@ -544,7 +794,7 @@ private struct TodayNotesWidgetView: View {
                 Button(intent: ShowWidgetTodayIntent()) {
                     Image(systemName: "chevron.left")
                         .font(headerFont(15, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.75))
+                        .foregroundStyle(theme.ink.opacity(0.75))
                         .frame(width: 26, height: 26)
                         .background(theme.buttonFill, in: theme.buttonShape)
                         .overlay {
@@ -563,7 +813,7 @@ private struct TodayNotesWidgetView: View {
             if !isEmpty, focused == nil {
                 Text(entry.date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))
                     .font(headerFont(13, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(theme.ink.opacity(0.5))
             }
         }
     }
@@ -571,7 +821,7 @@ private struct TodayNotesWidgetView: View {
     @ViewBuilder
     private var titleLink: some View {
         let title = HStack(spacing: 9) {
-            WidgetLogo()
+            WidgetLogo(theme: theme)
                 .frame(width: 18, height: 18)
 
             Text("Today")
@@ -588,134 +838,297 @@ private struct TodayNotesWidgetView: View {
 
     // MARK: A focused note
 
-    /// One note, given the whole widget: every line, and a checklist you can
-    /// cross off from here.
+    /// One note, given the whole widget: what is left to do, and a checklist
+    /// you can cross off from here.
+    ///
+    /// Crossed-off items are put away behind the button below rather than
+    /// shown, and the lines that remain are capped rather than shrunk past
+    /// reading size — a box too small to hit is worth less than a line the
+    /// note doesn't show.
     private func focusedNote(_ note: WidgetNote) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if note.hasMeta {
-                meta(of: note)
-            }
+        let lines = entry.showsChecked ? note.checkedItems : note.openLines
 
-            ViewThatFits(in: .vertical) {
-                lines(of: note, size: 16)
-                lines(of: note, size: 15)
-                lines(of: note, size: 14)
-                lines(of: note, size: 13)
-                lines(of: note, size: 12)
-            }
-
-            if note.blocks.isEmpty {
-                Text("Attachment")
-                    .font(detailFont(15))
-                    .foregroundStyle(.white.opacity(0.5))
-            }
+        return ViewThatFits(in: .vertical) {
+            focusedCard(note, lines: lines, limit: 8, size: 17)
+            focusedCard(note, lines: lines, limit: 7, size: 17)
+            focusedCard(note, lines: lines, limit: 6, size: 16)
+            focusedCard(note, lines: lines, limit: 5, size: 16)
+            focusedCard(note, lines: lines, limit: 4, size: 15)
+            focusedCard(note, lines: lines, limit: 3, size: 15)
+            focusedCard(note, lines: lines, limit: 2, size: 15)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    private func lines(of note: WidgetNote, size: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: size * 0.45) {
-            ForEach(note.blocks) { block in
-                line(block, in: note, size: size)
-                    .padding(.leading, CGFloat(block.indent) * 16)
+    private func focusedCard(
+        _ note: WidgetNote,
+        lines: [WidgetBlock],
+        limit: Int,
+        size: CGFloat
+    ) -> some View {
+        noteCard(
+            note,
+            lines: lines,
+            size: size,
+            scale: entry.type.detail,
+            interactive: true,
+            blockLimit: limit,
+            emptyLabel: entry.showsChecked ? "Nothing crossed off yet" : nil
+        )
+    }
+
+    // MARK: A note as a card
+
+    /// A note drawn the way the app draws it: a card washed with its timeline's
+    /// colour, that timeline's mark in the corner, and the note's own heading
+    /// above its lines.
+    ///
+    /// `blockLimit` and `lineLimit` are how the day's list keeps a long note to
+    /// a glance; a focused note passes neither and is drawn whole.
+    private func noteCard(
+        _ note: WidgetNote,
+        lines: [WidgetBlock],
+        size: CGFloat,
+        scale: CGFloat,
+        interactive: Bool,
+        blockLimit: Int? = nil,
+        lineLimit: Int? = nil,
+        emptyLabel: String? = nil
+    ) -> some View {
+        let timeline = entry.timeline(of: note)
+        let radius = theme.cardRadius(14)
+        let title = note.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // A heading can stand for the note on its own, but a note without one
+        // always shows a line, whatever the day's list asked for.
+        let allowance = blockLimit.map { title.isEmpty ? max($0, 1) : $0 }
+        let shown = allowance.map { Array(lines.prefix($0)) } ?? lines
+        let hidden = lines.count - shown.count
+        let placeholder = shown.isEmpty ? (emptyLabel ?? (title.isEmpty ? "Attachment" : nil)) : nil
+
+        func font(_ points: CGFloat, weight: Font.Weight = .regular) -> Font {
+            theme.font(points * scale, weight: weight)
+        }
+
+        return VStack(alignment: .leading, spacing: 10) {
+            if !title.isEmpty {
+                Text(title)
+                    .font(font(size + 3, weight: .semibold))
+                    .lineSpacing(2)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // Leaves the corner to the mark, as the app's card does.
+                    .padding(.trailing, timeline == nil ? 0 : 26)
+            }
+
+            if !shown.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(shown) { block in
+                        line(
+                            block,
+                            in: note,
+                            size: size,
+                            scale: scale,
+                            interactive: interactive,
+                            lineLimit: lineLimit
+                        )
+                        .padding(.leading, CGFloat(block.indent) * 18)
+                    }
+                }
+            }
+
+            if let placeholder {
+                Text(placeholder)
+                    .font(font(size - 2))
+                    .foregroundStyle(theme.ink.opacity(0.5))
+            }
+
+            // The lines that didn't fit are counted alongside the note's other
+            // marks rather than on a line of their own, which would cost the
+            // very room they were cut for.
+            if note.hasMeta || hidden > 0 {
+                meta(of: note, hiddenLines: hidden)
             }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            ZStack {
+                theme.cardFill
+                if let timeline {
+                    timeline.color.opacity(0.38)
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+        .overlay {
+            if let border = theme.cardBorder {
+                RoundedRectangle(cornerRadius: radius, style: .continuous).stroke(border)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if let timeline {
+                timelineMark(timeline)
+                    .padding(8)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+
+    /// The timeline's symbol on its colour, as it reads in the app.
+    private func timelineMark(_ timeline: WidgetTimeline, size: CGFloat = 22) -> some View {
+        Image(systemName: timeline.icon)
+            .font(theme.font(size * 0.55))
+            .foregroundStyle(theme.onAccent)
+            .frame(width: size, height: size)
+            .background(
+                timeline.color,
+                in: RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+            )
+            .accessibilityHidden(true)
     }
 
     @ViewBuilder
-    private func line(_ block: WidgetBlock, in note: WidgetNote, size: CGFloat) -> some View {
+    private func line(
+        _ block: WidgetBlock,
+        in note: WidgetNote,
+        size: CGFloat,
+        scale: CGFloat,
+        interactive: Bool,
+        lineLimit: Int?
+    ) -> some View {
         if block.isChecklistItem {
-            Button(
-                intent: ToggleWidgetChecklistItemIntent(
-                    noteID: note.id,
-                    blockID: block.id,
-                    isChecked: !block.isChecked
-                )
-            ) {
-                HStack(alignment: .firstTextBaseline, spacing: 9) {
-                    Image(systemName: block.isChecked ? "checkmark.circle.fill" : "circle")
-                        .font(detailFont(size - 1))
-                        .foregroundStyle(.white.opacity(block.isChecked ? 0.45 : 0.75))
-
-                    Text(block.text)
-                        .font(detailFont(size))
-                        .strikethrough(block.isChecked, color: .white.opacity(0.4))
-                        .foregroundStyle(.white.opacity(block.isChecked ? 0.42 : 1))
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            if interactive {
+                Button(
+                    intent: ToggleWidgetChecklistItemIntent(
+                        noteID: note.id,
+                        blockID: block.id,
+                        isChecked: !block.isChecked
+                    )
+                ) {
+                    checklistRow(block, size: size, scale: scale, lineLimit: lineLimit)
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityLabel(block.text)
+                .accessibilityHint(block.isChecked ? "Crosses the item back on" : "Crosses the item off")
+            } else {
+                // In the day's list the whole card is the button, so the boxes
+                // are drawn rather than offered.
+                checklistRow(block, size: size, scale: scale, lineLimit: lineLimit)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(block.text)
-            .accessibilityHint(block.isChecked ? "Crosses the item back on" : "Crosses the item off")
         } else {
-            HStack(alignment: .firstTextBaseline, spacing: 9) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
                 if let marker = block.marker {
                     Text(marker)
-                        .font(detailFont(size))
-                        .foregroundStyle(.white.opacity(0.45))
+                        .font(theme.font(size * scale))
+                        .foregroundStyle(theme.ink.opacity(0.6))
+                        .frame(minWidth: 14, alignment: .leading)
                 }
 
+                // Its own column, so a line that wraps stays clear of the marker.
                 Text(block.text)
-                    .font(detailFont(size))
+                    .font(theme.font(size * scale))
+                    .lineSpacing(2)
+                    .lineLimit(lineLimit)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private func checklistRow(
+        _ block: WidgetBlock,
+        size: CGFloat,
+        scale: CGFloat,
+        lineLimit: Int?
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            // The app draws a 23pt box against 17pt text; kept in proportion as
+            // the widget shrinks its type to fit.
+            WidgetChecklistMark(
+                isChecked: block.isChecked,
+                theme: theme,
+                size: size * scale * (23 / 17)
+            )
+            .padding(.top, 1)
+
+            Text(block.text)
+                .font(theme.font(size * scale))
+                .lineSpacing(2)
+                .strikethrough(block.isChecked, color: theme.ink.opacity(0.45))
+                .foregroundStyle(block.isChecked ? theme.ink.opacity(0.4) : theme.ink)
+                .lineLimit(lineLimit)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
     }
 
     // MARK: The day's list
 
-    private func noteList(limit: Int) -> some View {
+    /// A tapped note either opens here, without leaving the Home Screen, or in
+    /// the app on the note itself — whichever the app's settings ask for.
+    @ViewBuilder
+    private func tapTarget<Content: View>(
+        for note: WidgetNote,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        switch entry.noteTap {
+        case .focusInWidget:
+            Button(intent: FocusWidgetNoteIntent(noteID: note.id)) {
+                content()
+            }
+            .buttonStyle(.plain)
+
+        case .openInApp:
+            if let destination = WidgetLink.note(note.id) {
+                Link(destination: destination) { content() }
+            } else {
+                content()
+            }
+        }
+    }
+
+    /// `blocks` is how many of each note's lines the card carries; at zero the
+    /// heading stands for the note on its own.
+    private func noteList(limit: Int, blocks: Int) -> some View {
         let shown = Array(entry.notes.prefix(limit))
         let overflow = max(0, entry.notes.count - shown.count)
 
-        return VStack(spacing: 0) {
-            ForEach(shown.enumerated(), id: \.element.id) { index, note in
-                if index > 0 {
-                    Rectangle()
-                        .fill(theme.separator)
-                        .frame(height: 1)
+        return VStack(spacing: 10) {
+            ForEach(shown) { note in
+                tapTarget(for: note) {
+                    noteCard(
+                        note,
+                        lines: note.blocks,
+                        size: 17,
+                        scale: entry.type.list,
+                        interactive: false,
+                        blockLimit: blocks,
+                        lineLimit: blocks <= 1 ? 2 : 1
+                    )
                 }
-
-                // A tap opens the note here rather than in the app, so the whole
-                // of it can be read without leaving the Home Screen.
-                Button(intent: FocusWidgetNoteIntent(noteID: note.id)) {
-                    noteRow(note)
-                }
-                .buttonStyle(.plain)
                 .accessibilityLabel(note.summary)
-                .accessibilityHint("Opens this note in the widget")
+                .accessibilityHint(
+                    entry.noteTap == .focusInWidget
+                        ? "Opens this note in the widget"
+                        : "Opens this note in Wispr"
+                )
             }
 
             if overflow > 0 {
                 Text("+\(overflow) more")
                     .font(listFont(12, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.48))
+                    .foregroundStyle(theme.ink.opacity(0.48))
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 8)
             }
         }
     }
 
-    private func noteRow(_ note: WidgetNote) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(note.summary)
-                .font(listFont(15))
-                .lineSpacing(2)
-                .lineLimit(4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            if note.hasMeta {
-                meta(of: note)
-            }
-        }
-        .padding(.vertical, 8)
-        .contentShape(Rectangle())
-    }
-
-    /// When a note happens and what it carries besides words.
-    private func meta(of note: WidgetNote) -> some View {
+    /// When a note happens, what it carries besides words, and how much of it
+    /// the card had to leave out.
+    private func meta(of note: WidgetNote, hiddenLines: Int = 0) -> some View {
         HStack(spacing: 12) {
             if let schedule = note.schedule {
                 Label(schedule, systemImage: "clock")
@@ -726,9 +1139,12 @@ private struct TodayNotesWidgetView: View {
             if note.voiceMemoCount > 0 {
                 Label("\(note.voiceMemoCount)", systemImage: "waveform")
             }
+            if hiddenLines > 0 {
+                Label("+\(hiddenLines)", systemImage: "text.alignleft")
+            }
         }
         .font(theme.font(11, weight: .medium))
-        .foregroundStyle(.white.opacity(0.46))
+        .foregroundStyle(theme.ink.opacity(0.46))
         .labelStyle(.titleAndIcon)
         .lineLimit(1)
     }
@@ -748,7 +1164,7 @@ private struct TodayNotesWidgetView: View {
 
                 Text(entry.date.formatted(.dateTime.weekday(.wide).month(.wide).day()))
                     .font(theme.font(14, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(theme.ink.opacity(0.5))
             }
 
             Rectangle()
@@ -760,27 +1176,59 @@ private struct TodayNotesWidgetView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    // MARK: New note
+    // MARK: The bottom row
+
+    /// What has been crossed off on the left, a new note on the right.
+    private var bottomBar: some View {
+        HStack(spacing: 10) {
+            if let focused, !focused.checkedItems.isEmpty || entry.showsChecked {
+                crossedOffToggle(focused)
+            }
+
+            Spacer(minLength: 0)
+
+            newNoteButton
+        }
+    }
+
+    /// Swaps the focused note between what is left and what is done: one list
+    /// at a time, so neither has to be squeezed to fit beside the other.
+    private func crossedOffToggle(_ note: WidgetNote) -> some View {
+        let showing = entry.showsChecked
+        let count = showing ? note.openItemCount : note.checkedItems.count
+        let shape = RoundedRectangle(cornerRadius: theme.cardRadius(17), style: .continuous)
+
+        return Button(intent: ShowWidgetCrossedOffIntent(showsChecked: !showing)) {
+            HStack(spacing: 7) {
+                Image(systemName: showing ? "circle" : "checkmark.circle")
+                Text(showing ? "\(count) to do" : "\(count) done")
+            }
+            .font(headerFont(13, weight: .medium))
+            .foregroundStyle(theme.ink.opacity(0.75))
+            .padding(.horizontal, 13)
+            .frame(height: 34)
+            .background(theme.buttonFill, in: shape)
+            .overlay { shape.stroke(theme.border) }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(showing ? "Show what is left to do" : "Show what is crossed off")
+    }
 
     /// Straight into a new note for today, without a stop on the way.
     @ViewBuilder
     private var newNoteButton: some View {
         if let destination = WidgetLink.newNote {
-            HStack {
-                Spacer()
-
-                Link(destination: destination) {
-                    Image(systemName: "plus")
-                        .font(theme.font(19, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 42, height: 42)
-                        .background(theme.buttonFill, in: theme.buttonShape)
-                        .overlay {
-                            theme.buttonShape.stroke(theme.border)
-                        }
-                }
-                .accessibilityLabel("New note")
+            Link(destination: destination) {
+                Image(systemName: "plus")
+                    .font(theme.font(19, weight: .semibold))
+                    .foregroundStyle(theme.ink)
+                    .frame(width: 42, height: 42)
+                    .background(theme.buttonFill, in: theme.buttonShape)
+                    .overlay {
+                        theme.buttonShape.stroke(theme.border)
+                    }
             }
+            .accessibilityLabel("New note")
         }
     }
 }
@@ -800,7 +1248,7 @@ private struct MonthCalendar: View {
                 ForEach(weekdaySymbols.enumerated(), id: \.offset) { _, symbol in
                     Text(symbol)
                         .font(theme.font(11, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.35))
+                        .foregroundStyle(theme.ink.opacity(0.35))
                         .frame(maxWidth: .infinity)
                 }
             }
@@ -824,11 +1272,11 @@ private struct MonthCalendar: View {
             Text("\(day)")
                 .font(theme.font(13, weight: isToday ? .semibold : .regular))
                 .monospacedDigit()
-                .foregroundStyle(isToday ? theme.markedDay : .white.opacity(0.72))
+                .foregroundStyle(isToday ? theme.markedDay : theme.ink.opacity(0.72))
                 .frame(width: 26, height: 26)
                 .background {
                     if isToday {
-                        theme.buttonShape.fill(.white)
+                        theme.buttonShape.fill(theme.ink)
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -865,7 +1313,32 @@ private struct MonthCalendar: View {
     }
 }
 
+/// The checklist box, drawn the way the app draws it: a ring in the default
+/// theme, a square in legacy.
+private struct WidgetChecklistMark: View {
+    let isChecked: Bool
+    let theme: WidgetTheme
+    var size: CGFloat = 23
+
+    var body: some View {
+        ZStack {
+            theme.markShape
+                .stroke(theme.ink.opacity(isChecked ? 0.5 : 0.72), lineWidth: 1.5)
+
+            if isChecked {
+                Image(systemName: "checkmark")
+                    .font(.system(size: size * 0.52, weight: .bold))
+                    .foregroundStyle(theme.ink.opacity(0.68))
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
 private struct WidgetLogo: View {
+    let theme: WidgetTheme
+
     var body: some View {
         GeometryReader { proxy in
             let cell = proxy.size.width * 0.42
@@ -881,7 +1354,7 @@ private struct WidgetLogo: View {
 
     private func square(_ size: CGFloat) -> some View {
         Rectangle()
-            .fill(.white)
+            .fill(theme.ink)
             .frame(width: size, height: size)
     }
 }
@@ -909,7 +1382,11 @@ struct WisprWidgetBundle: WidgetBundle {
 #Preview("Mixed notes", as: .systemLarge) {
     TodayNotesWidget()
 } timeline: {
-    TodayNotesEntry(date: .now, notes: TodayNotesProvider.previewNotes)
+    TodayNotesEntry(
+        date: .now,
+        notes: TodayNotesProvider.previewNotes,
+        timelines: TodayNotesProvider.previewTimelines
+    )
 }
 
 #Preview("Focused note", as: .systemLarge) {
@@ -918,7 +1395,31 @@ struct WisprWidgetBundle: WidgetBundle {
     TodayNotesEntry(
         date: .now,
         notes: TodayNotesProvider.previewNotes,
-        focusedNoteID: TodayNotesProvider.previewNotes[0].id
+        focusedNoteID: TodayNotesProvider.previewNotes[0].id,
+        timelines: TodayNotesProvider.previewTimelines
+    )
+}
+
+#Preview("Long checklist", as: .systemLarge) {
+    TodayNotesWidget()
+} timeline: {
+    TodayNotesEntry(
+        date: .now,
+        notes: [TodayNotesProvider.previewLongNote],
+        focusedNoteID: TodayNotesProvider.previewLongNote.id,
+        timelines: TodayNotesProvider.previewTimelines
+    )
+}
+
+#Preview("Crossed off", as: .systemLarge) {
+    TodayNotesWidget()
+} timeline: {
+    TodayNotesEntry(
+        date: .now,
+        notes: [TodayNotesProvider.previewLongNote],
+        focusedNoteID: TodayNotesProvider.previewLongNote.id,
+        timelines: TodayNotesProvider.previewTimelines,
+        showsChecked: true
     )
 }
 
@@ -931,12 +1432,28 @@ struct WisprWidgetBundle: WidgetBundle {
 #Preview("Legacy notes", as: .systemLarge) {
     TodayNotesWidget()
 } timeline: {
-    TodayNotesEntry(date: .now, notes: TodayNotesProvider.previewNotes, theme: .legacy)
+    TodayNotesEntry(
+        date: .now,
+        notes: TodayNotesProvider.previewNotes,
+        theme: .legacy,
+        timelines: TodayNotesProvider.previewTimelines
+    )
 }
 
 #Preview("Legacy empty", as: .systemLarge) {
     TodayNotesWidget()
 } timeline: {
     TodayNotesEntry(date: .now, notes: [], theme: .legacy)
+}
+
+#Preview("Newspaper notes", as: .systemLarge) {
+    TodayNotesWidget()
+} timeline: {
+    TodayNotesEntry(
+        date: .now,
+        notes: TodayNotesProvider.previewNotes,
+        theme: .newspaper,
+        timelines: TodayNotesProvider.previewTimelines
+    )
 }
 #endif

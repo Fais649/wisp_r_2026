@@ -257,11 +257,16 @@ struct NoteLocation: Equatable, Codable, Sendable {
 /// A single thing written down on a given day.
 struct Note: Identifiable, Equatable {
     var id = UUID()
+    /// A concise heading, generated on-device when the person leaves it blank.
+    var title: String?
     var blocks: [NoteBlock] = []
     var attachments: [NoteAttachment] = []
     var location: NoteLocation?
     /// An SF Symbol selected on-device to represent this note on its day map.
     var mapSymbol: String?
+    /// The timeline this note is filed under, if any. Kept on the note so it
+    /// travels with it between days.
+    var timelineID: UUID?
     /// Set once the note has been given a time; `nil` for a plain note.
     var schedule: NoteSchedule?
     /// The calendar event this note mirrors, when it is synced.
@@ -293,16 +298,22 @@ struct Note: Identifiable, Equatable {
     /// The note with blank lines dropped, as it should be stored.
     var trimmed: Note {
         var copy = self
+        let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        copy.title = trimmedTitle.isEmpty ? nil : trimmedTitle
         copy.blocks = blocks.filter { !$0.isBlank }
         return copy
     }
 
-    /// A note holding only attachments is still worth keeping.
-    var isEmpty: Bool { blocks.allSatisfy(\.isBlank) && attachments.isEmpty }
+    /// A titled note or a note holding only attachments is still worth keeping.
+    var isEmpty: Bool {
+        let hasTitle = !(title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        return !hasTitle && blocks.allSatisfy(\.isBlank) && attachments.isEmpty
+    }
 
     /// The note in one line, for the day previews and pickers that list notes
     /// without drawing them.
     var summaryLine: String {
+        if let title, !title.isEmpty { return title }
         if let written = blocks.first(where: { !$0.isBlank }) {
             return String(written.text.characters)
         }
@@ -327,6 +338,10 @@ struct Note: Identifiable, Equatable {
 
     /// The plain title a calendar event should carry: the first written line.
     var calendarTitle: String {
+        if let title {
+            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
         if let written = blocks.first(where: { !$0.isBlank }) {
             let line = String(written.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
             if !line.isEmpty { return line }
@@ -340,12 +355,19 @@ struct Note: Identifiable, Equatable {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolved = trimmed.isEmpty ? "New Event" : trimmed
         guard resolved != calendarTitle else { return }
+        self.title = resolved
+    }
 
-        if let index = blocks.firstIndex(where: { !$0.isBlank }) {
-            blocks[index].text = AttributedString(resolved)
-        } else {
-            blocks.insert(NoteBlock(text: AttributedString(resolved)), at: 0)
+    /// Plain content supplied to the on-device model. The stored title is left
+    /// out so generation is based on what the note says, not its old heading.
+    var titleGenerationContent: String {
+        var parts = blocks.compactMap { block -> String? in
+            let text = String(block.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
         }
+        if let location = schedule?.eventLocation { parts.append("Location: \(location)") }
+        parts.append(contentsOf: attachments.map(\.displayName))
+        return parts.joined(separator: "\n")
     }
 }
 
@@ -393,17 +415,19 @@ extension NoteBlock: Codable {
 // still decode.
 extension Note: Codable {
     private enum CodingKeys: String, CodingKey {
-        case id, blocks, attachments, location, mapSymbol, schedule, createdAt
-        case calendarEventID, calendarOccurrence, calendarRevision
+        case id, title, blocks, attachments, location, mapSymbol, schedule, createdAt
+        case calendarEventID, calendarOccurrence, calendarRevision, timelineID
     }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
         blocks = try container.decode([NoteBlock].self, forKey: .blocks)
         attachments = try container.decodeIfPresent([NoteAttachment].self, forKey: .attachments) ?? []
         location = try container.decodeIfPresent(NoteLocation.self, forKey: .location)
         mapSymbol = try container.decodeIfPresent(String.self, forKey: .mapSymbol)
+        timelineID = try container.decodeIfPresent(UUID.self, forKey: .timelineID)
         schedule = try container.decodeIfPresent(NoteSchedule.self, forKey: .schedule)
         calendarEventID = try container.decodeIfPresent(String.self, forKey: .calendarEventID)
         calendarOccurrence = try container.decodeIfPresent(Date.self, forKey: .calendarOccurrence)
@@ -414,10 +438,12 @@ extension Note: Codable {
     func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(title, forKey: .title)
         try container.encode(blocks, forKey: .blocks)
         try container.encode(attachments, forKey: .attachments)
         try container.encodeIfPresent(location, forKey: .location)
         try container.encodeIfPresent(mapSymbol, forKey: .mapSymbol)
+        try container.encodeIfPresent(timelineID, forKey: .timelineID)
         try container.encodeIfPresent(schedule, forKey: .schedule)
         try container.encodeIfPresent(calendarEventID, forKey: .calendarEventID)
         try container.encodeIfPresent(calendarOccurrence, forKey: .calendarOccurrence)
@@ -436,6 +462,7 @@ final class NoteStore {
     private let fileURL: URL?
     private let calendarSync = CalendarSync()
     @ObservationIgnored private var symbolAssignments: Set<UUID> = []
+    @ObservationIgnored private var titleAssignments: Set<UUID> = []
     /// Set while applying a calendar refresh, so it isn't pushed straight back.
     private var isApplyingCalendar = false
 
@@ -528,6 +555,17 @@ final class NoteStore {
         }
     }
 
+    /// Lazily gives existing untitled notes a heading without blocking the day
+    /// view. A deterministic fallback is used when the local model is unavailable.
+    func ensureGeneratedTitles(on day: Date) {
+        for note in notes(on: day) where note.title == nil {
+            guard titleAssignments.insert(note.id).inserted else { continue }
+            Task { [weak self] in
+                await self?.assignGeneratedTitle(to: note.id)
+            }
+        }
+    }
+
     // MARK: Writing
 
     /// Inserts the note, replaces it wherever it already lives, or removes it when empty.
@@ -552,6 +590,23 @@ final class NoteStore {
         }
         persist()
         ensureMapSymbols(on: day)
+        ensureGeneratedTitles(on: day)
+    }
+
+    private func assignGeneratedTitle(to noteID: UUID) async {
+        defer { titleAssignments.remove(noteID) }
+        guard let located = locate(noteID),
+              let note = notesByDay[located.key]?[located.index],
+              note.title == nil
+        else { return }
+
+        let title = await NoteTitleAssigner.shared.title(
+            for: note.titleGenerationContent,
+            fallback: note.summaryLine
+        )
+        guard let latest = locate(noteID), notesByDay[latest.key]?[latest.index].title == nil else { return }
+        notesByDay[latest.key]?[latest.index].title = title
+        persist()
     }
 
     private func assignMapSymbol(to noteID: UUID, visibleOn day: Date) async {
@@ -569,6 +624,28 @@ final class NoteStore {
 
         guard let located = locate(noteID) else { return }
         notesByDay[located.key]?[located.index].mapSymbol = symbol
+        persist()
+    }
+
+    /// Persists the order produced by SwiftUI's native List reordering. Events
+    /// carried over from another day remain anchored ahead of the notes that are
+    /// actually stored on this day and can't themselves be moved here.
+    func reorderNotes(on day: Date, fromOffsets offsets: IndexSet, toOffset destination: Int) {
+        let key = Self.key(for: day)
+        guard let storedNotes = notesByDay[key], !storedNotes.isEmpty else { return }
+
+        let storedIDs = Set(storedNotes.map(\.id))
+        var visibleNotes = notes(on: day)
+        let movedIDs = offsets.compactMap { index in
+            visibleNotes.indices.contains(index) ? visibleNotes[index].id : nil
+        }
+        guard !movedIDs.isEmpty, movedIDs.allSatisfy(storedIDs.contains) else { return }
+
+        visibleNotes.move(fromOffsets: offsets, toOffset: destination)
+        let reordered = visibleNotes.filter { storedIDs.contains($0.id) }
+        guard reordered.count == storedNotes.count else { return }
+
+        notesByDay[key] = reordered
         persist()
     }
 
@@ -648,6 +725,29 @@ final class NoteStore {
         if !isApplyingCalendar {
             notesByDay[located.key]?[located.index].calendarRevision = nil
         }
+        persist()
+    }
+
+    /// Files a note under a timeline, or takes it out of one with `nil`.
+    func setTimeline(_ timelineID: UUID?, forNote noteID: UUID, on day: Date) {
+        guard let located = locate(noteID, preferring: day),
+              notesByDay[located.key]?[located.index].timelineID != timelineID
+        else { return }
+
+        notesByDay[located.key]?[located.index].timelineID = timelineID
+        persist()
+    }
+
+    /// Unfiles every note left behind by a deleted timeline.
+    func clearTimeline(_ timelineID: UUID) {
+        var changed = false
+        for (key, notes) in notesByDay {
+            for (index, note) in notes.enumerated() where note.timelineID == timelineID {
+                notesByDay[key]?[index].timelineID = nil
+                changed = true
+            }
+        }
+        guard changed else { return }
         persist()
     }
 

@@ -1,11 +1,13 @@
 import SwiftUI
 
-/// The two looks the app can wear.
+/// The looks the app can wear.
 enum WisprThemeKind: String, CaseIterable, Identifiable {
     /// Soft grey, rounded glass cards.
     case standard
     /// wspr as it was: black, hairlines, and a bitmap terminal font.
     case legacy
+    /// Ink on newsprint: serif type, squared columns and printed rules.
+    case newspaper
 
     var id: String { rawValue }
 
@@ -13,6 +15,7 @@ enum WisprThemeKind: String, CaseIterable, Identifiable {
         switch self {
         case .standard: "Default"
         case .legacy: "Legacy"
+        case .newspaper: "Newspaper"
         }
     }
 
@@ -20,6 +23,16 @@ enum WisprThemeKind: String, CaseIterable, Identifiable {
         switch self {
         case .standard: "Soft grey with rounded glass cards."
         case .legacy: "Black, hairline rules and a bitmap terminal font."
+        case .newspaper: "Ink on newsprint: serif type and squared columns."
+        }
+    }
+
+    /// The only light theme so far, so everything system-drawn — keyboards,
+    /// pickers, the text cursor — has to be told.
+    var colorScheme: ColorScheme {
+        switch self {
+        case .standard, .legacy: .dark
+        case .newspaper: .light
         }
     }
 }
@@ -36,6 +49,8 @@ extension WisprThemeKind {
             // smears it. Gohu also runs small for its point size, hence the
             // nudge upwards.
             .custom(Self.legacyFaceName(for: size), size: size * 1.02)
+        case .newspaper:
+            .system(size: size, weight: weight, design: .serif)
         }
     }
 
@@ -66,6 +81,31 @@ enum WisprTextRole: String, CaseIterable, Identifiable {
         case .editor: "Editor"
         case .note: "Notes"
         }
+    }
+}
+
+/// Metrics shared by editable note text and its rendered day-card form.
+enum NoteTextMetrics {
+    static let bodySize: CGFloat = 17
+    static let titleSize: CGFloat = 20
+    static let lineSpacing: CGFloat = 2
+    static let blockSpacing: CGFloat = 2
+    static let checklistMarkSize: CGFloat = 23
+    /// The ballot-box glyph needs a larger em square than the drawn checkbox
+    /// on a day card to have the same visible footprint inside TextEditor.
+    static let editorChecklistMarkSize: CGFloat = 32
+    static let checklistSpacing: CGFloat = 10
+    static let checklistVerticalPadding: CGFloat = 6
+    static let indentWidth: CGFloat = 18
+    /// Text controls render the bitmap face smaller than static `Text` at the
+    /// same point size. This keeps their visible cap height aligned.
+    static var editorOpticalScale: CGFloat {
+        AppSettings.shared.theme == .legacy ? 1.4 : 1
+    }
+
+    static var editorChecklistAdvance: CGFloat {
+        editorChecklistMarkSize * AppSettings.shared.textSize(for: .note).scale
+            + checklistSpacing
     }
 }
 
@@ -119,19 +159,35 @@ extension Font {
 // MARK: - Palette
 
 extension WisprThemeKind {
+    /// What text, symbols and rules are drawn in. Every foreground in the app
+    /// goes through this rather than naming a colour, so a light theme is a
+    /// matter of the palette rather than of every view.
+    var ink: Color {
+        switch self {
+        case .standard, .legacy: .white
+        case .newspaper: Color(red: 0.11, green: 0.10, blue: 0.09)
+        }
+    }
+
+    /// Text and symbols drawn over the fixed dark timeline colours.
+    var onAccent: Color { .white }
+
     /// The fill behind grouped rows and note cards.
     var cardFill: Color {
         switch self {
         case .standard: Color.white.opacity(0.05)
         case .legacy: Color.white.opacity(0.03)
+        // A cleaner sheet laid on the newsprint, not a shade of it.
+        case .newspaper: Color(red: 0.97, green: 0.96, blue: 0.93)
         }
     }
 
-    /// Legacy draws boxes rather than filling them.
+    /// Legacy and newspaper draw boxes rather than filling them.
     var cardBorder: Color? {
         switch self {
         case .standard: nil
         case .legacy: Color.white.opacity(0.22)
+        case .newspaper: ink.opacity(0.26)
         }
     }
 
@@ -140,7 +196,7 @@ extension WisprThemeKind {
     var sheetCornerRadius: CGFloat? {
         switch self {
         case .standard: nil
-        case .legacy: 0
+        case .legacy, .newspaper: 0
         }
     }
 
@@ -148,6 +204,8 @@ extension WisprThemeKind {
         switch self {
         case .standard: Color.white.opacity(0.08)
         case .legacy: Color.white.opacity(0.18)
+        // The printed rule between columns.
+        case .newspaper: ink.opacity(0.28)
         }
     }
 
@@ -155,14 +213,16 @@ extension WisprThemeKind {
         switch self {
         case .standard: Color.white.opacity(0.42)
         case .legacy: Color.white.opacity(0.45)
+        case .newspaper: ink.opacity(0.55)
         }
     }
 
-    /// Legacy keeps its corners nearly square.
+    /// Legacy keeps its corners nearly square; a newspaper has none at all.
     func cornerRadius(_ requested: CGFloat) -> CGFloat {
         switch self {
         case .standard: requested
         case .legacy: min(requested, 4)
+        case .newspaper: 0
         }
     }
 
@@ -188,6 +248,17 @@ struct WisprBackground: View {
                 )
             case .legacy:
                 Color.black
+            case .newspaper:
+                // Newsprint is never one flat colour; the page is slightly
+                // warmer where it has been handled.
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.94, green: 0.93, blue: 0.89),
+                        Color(red: 0.91, green: 0.89, blue: 0.84)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
             }
         }
         .ignoresSafeArea()
@@ -195,6 +266,10 @@ struct WisprBackground: View {
 }
 
 extension Color {
+    /// What text, symbols and rules are drawn in, whichever theme is on.
+    static var wisprInk: Color { AppSettings.shared.theme.ink }
+    /// Foreground used on the app's fixed dark accent colours.
+    static var wisprOnAccent: Color { AppSettings.shared.theme.onAccent }
     /// The translucent fill used by grouped rows and note cards.
     static var wisprCard: Color { AppSettings.shared.theme.cardFill }
     /// The hairline used between rows inside a card.

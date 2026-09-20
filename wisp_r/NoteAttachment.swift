@@ -238,7 +238,7 @@ struct AttachmentThumbnail: View {
     var body: some View {
         // The image lives in an overlay so its intrinsic size can never push the
         // surrounding layout around; the frame comes from the caller.
-        Color.white.opacity(0.06)
+        Color.wisprInk.opacity(0.06)
             .overlay {
                 if let image {
                     image
@@ -247,14 +247,14 @@ struct AttachmentThumbnail: View {
                 } else {
                     Image(systemName: attachment.symbolName)
                         .font(.wispr(22))
-                        .foregroundStyle(Color.white.opacity(0.3))
+                        .foregroundStyle(Color.wisprInk.opacity(0.3))
                 }
             }
             .overlay {
                 if attachment.kind == .video {
                     Image(systemName: "play.circle.fill")
                         .font(.wispr(34))
-                        .foregroundStyle(.white, Color.black.opacity(0.35))
+                        .foregroundStyle(Color.wisprInk, Color.black.opacity(0.35))
                 }
             }
             .clipped()

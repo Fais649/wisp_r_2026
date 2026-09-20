@@ -9,10 +9,13 @@ private struct TodayWidgetSnapshot: Encodable {
 
 private struct TodayWidgetNote: Encodable {
     let id: UUID
+    let title: String?
     let blocks: [TodayWidgetBlock]
     let schedule: String?
     let imageCount: Int
     let voiceMemoCount: Int
+    /// Looked up against the timelines the store publishes separately.
+    let timelineID: UUID?
 }
 
 /// One line of a note, sent whole rather than pre-drawn, so the widget can lay
@@ -103,10 +106,12 @@ enum TodayWidgetSnapshotPublisher {
 
         return TodayWidgetNote(
             id: note.id,
+            title: note.title,
             blocks: blocks,
             schedule: note.schedule?.summary(on: day),
             imageCount: note.mediaAttachments.count,
-            voiceMemoCount: note.voiceMemos.count
+            voiceMemoCount: note.voiceMemos.count,
+            timelineID: note.timelineID
         )
     }
 

@@ -31,6 +31,10 @@ struct DayView: View {
     /// Cleared once honoured.
     @Binding private var newNoteRequest: UUID?
 
+    /// A request from outside — a note tapped in the widget — to open one note
+    /// for editing. Cleared once honoured.
+    @Binding private var openNoteRequest: UUID?
+
     private let today = Calendar.current.startOfDay(for: .now)
 
     @State private var visibleDayOffset: Int?
@@ -50,10 +54,12 @@ struct DayView: View {
     init(
         initialDay: Date? = nil,
         backTitle: String = AppSettings.shared.displayTitle,
-        newNoteRequest: Binding<UUID?> = .constant(nil)
+        newNoteRequest: Binding<UUID?> = .constant(nil),
+        openNoteRequest: Binding<UUID?> = .constant(nil)
     ) {
         self.backTitle = backTitle
         _newNoteRequest = newNoteRequest
+        _openNoteRequest = openNoteRequest
 
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: .now)
@@ -70,17 +76,17 @@ struct DayView: View {
     }
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             WisprBackground()
 
-            VStack(spacing: 0) {
-                topBar
-                    .padding(.horizontal, 20)
-                    .padding(.top, 12)
-                    .padding(.bottom, 8)
+            days
 
-                days
-            }
+            // A true overlay with no material or background: rows can recede
+            // behind it instead of being clipped below a reserved bar.
+            topBar
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
         }
         .overlay(alignment: jumpButtonAlignment) {
             if !isShowingToday, !isSelecting {
@@ -99,6 +105,11 @@ struct DayView: View {
             guard newNoteRequest != nil else { return }
             newNoteRequest = nil
             composeNewNoteForToday()
+        }
+        .task(id: openNoteRequest) {
+            guard let noteID = openNoteRequest else { return }
+            openNoteRequest = nil
+            open(noteID)
         }
         .sheet(item: $editingNote) { note in
             let home = store.storedDay(of: note.id) ?? day
@@ -169,51 +180,75 @@ struct DayView: View {
         let notes = store.notes(on: pageDay)
         let hasMapContent = !samples.isEmpty || notes.contains { $0.mapLocation != nil }
 
-        return List {
+        return DayMapBackdrop {
             if hasMapContent {
                 DayPathBackdrop(samples: samples, notes: notes) { note in
                     isCreatingNote = false
                     editingNote = note
                 }
-                    .aspectRatio(1, contentMode: .fit)
-                    .dayScrollDepthTransition()
-                    .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 12, trailing: 0))
+            }
+        } content: {
+            List {
+                if hasMapContent {
+                    // The map has left the list to park behind it, but the list
+                    // still lays out the room it used to fill, so the notes
+                    // start below it.
+                    Color.clear
+                        .aspectRatio(1, contentMode: .fit)
+                        .allowsHitTesting(false)
+                        .listRowInsets(DayMapLayout.rowInsets)
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+
+                header(for: pageDay)
+                    // The top bar floats above the list. Leave its height at the
+                    // top of a plain day, while still letting scrolled content
+                    // pass behind it. A map already provides that separation.
+                    .padding(.top, hasMapContent ? 0 : 36)
+                    .listRowInsets(EdgeInsets(top: 10, leading: 0, bottom: 6, trailing: 0))
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
-            }
 
-            header(for: pageDay)
-                .dayScrollDepthTransition()
-                .listRowInsets(EdgeInsets(top: 10, leading: 0, bottom: 6, trailing: 0))
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
+                ForEach(notes) { note in
+                    // No insets: the row is exactly the card, so a press and hold
+                    // lifts the card itself rather than a wider strip around it.
+                    noteRow(note, on: pageDay)
+                        .moveDisabled(
+                            isSelecting || !Calendar.current.isDate(
+                                store.storedDay(of: note.id) ?? .distantPast,
+                                inSameDayAs: pageDay
+                            )
+                        )
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+                .onMove { offsets, destination in
+                    withAnimation(.snappy) {
+                        store.reorderNotes(on: pageDay, fromOffsets: offsets, toOffset: destination)
+                    }
+                }
 
-            ForEach(notes) { note in
-                // No insets: the row is exactly the card, so a press and hold
-                // lifts the card itself rather than a wider strip around it.
-                noteRow(note, on: pageDay)
-                    .dayScrollDepthTransition()
+                newNoteArea
                     .listRowInsets(EdgeInsets())
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
             }
-
-            newNoteArea
-                .dayScrollDepthTransition()
-                .listRowInsets(EdgeInsets())
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
+            .listStyle(.plain)
+            // Gaps between cards come from the list, and the side margins from the
+            // content insets, so neither ends up inside a row.
+            .listRowSpacing(12)
+            .contentMargins(.horizontal, DayMapLayout.horizontalMargin, for: .scrollContent)
+            .scrollContentBackground(.hidden)
+            .scrollClipDisabled()
+            .scrollEdgeEffectHidden(true, for: .top)
+            .scrollBounceBehavior(.always, axes: .vertical)
+            .environment(\.defaultMinListRowHeight, 0)
         }
-        .listStyle(.plain)
-        // Gaps between cards come from the list, and the side margins from the
-        // content insets, so neither ends up inside a row.
-        .listRowSpacing(12)
-        .contentMargins(.horizontal, 20, for: .scrollContent)
-        .scrollContentBackground(.hidden)
-        .scrollBounceBehavior(.always, axes: .vertical)
-        .environment(\.defaultMinListRowHeight, 0)
         .task(id: pageDay) {
             store.ensureMapSymbols(on: pageDay)
+            store.ensureGeneratedTitles(on: pageDay)
         }
     }
 
@@ -228,7 +263,7 @@ struct DayView: View {
                     Text(backTitle)
                         .font(.wispr(17))
                 }
-                .foregroundStyle(Color.white.opacity(0.6))
+                .foregroundStyle(Color.wisprInk.opacity(0.6))
             }
             .buttonStyle(.plain)
 
@@ -240,7 +275,7 @@ struct DayView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(DayFormat.relativeTitle(for: pageDay))
                 .font(.wispr(34, weight: .semibold, role: .header))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.wisprInk)
 
             Text(DayFormat.dateSubtitle(for: pageDay))
                 .font(.wispr(15, role: .header))
@@ -300,6 +335,16 @@ struct DayView: View {
                 }
             }
         }
+        // List reordering snapshots the row container, not only the glass
+        // drawn inside it. Give that system preview the card's real silhouette
+        // so the lifted note doesn't expose the row's square black corners.
+        .contentShape(
+            .dragPreview,
+            RoundedRectangle(
+                cornerRadius: AppSettings.shared.theme.cornerRadius(14),
+                style: .continuous
+            )
+        )
     }
 
     @ViewBuilder
@@ -369,7 +414,7 @@ struct DayView: View {
         }
         .buttonStyle(.glass(.regular.interactive()))
         .font(.wispr(17))
-        .foregroundStyle(.white)
+        .foregroundStyle(Color.wisprInk)
         .padding(.horizontal, 20)
         .frame(height: 52)
         .background(alignment: .top) {
@@ -441,7 +486,7 @@ struct DayView: View {
         } label: {
             Image(systemName: "diamond.fill")
                 .font(.wispr(19))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.wisprInk)
                 .frame(width: 52, height: 52)
                 .background(.bar, in: Circle())
                 .overlay {
@@ -479,6 +524,24 @@ struct DayView: View {
             blocks: [NoteBlock()],
             location: locationHistory.locationForNewNote()
         )
+    }
+
+    /// Pages to the day a note lives on and opens it, for a note tapped in the
+    /// widget. A note that has since been deleted simply leaves the day as it is.
+    private func open(_ noteID: UUID) {
+        guard let home = store.storedDay(of: noteID),
+              let note = store.notes(on: home).first(where: { $0.id == noteID })
+        else { return }
+
+        let offset = Calendar.current.dateComponents([.day], from: today, to: home).day ?? 0
+        withAnimation(.snappy) {
+            isSelecting = false
+            selectedNoteIDs = []
+            visibleDayOffset = min(max(offset, -Self.pageReach), Self.pageReach)
+        }
+
+        isCreatingNote = false
+        editingNote = note
     }
 
     // MARK: - Voice memos
@@ -526,21 +589,80 @@ struct DayView: View {
 
 // MARK: - Day scrolling and map
 
-private struct DayScrollDepthTransition: ViewModifier {
-    func body(content: Content) -> some View {
-        content.scrollTransition(.interactive(timingCurve: .easeOut), axis: .vertical) { content, phase in
-            content
-                .blur(radius: 7 * max(0, -phase.value))
-                .opacity(1 - 0.45 * max(0, -phase.value))
-                .scaleEffect(1 - 0.035 * max(0, -phase.value), anchor: .bottom)
-        }
+/// Where the map sits, shared by the list row that reserves its space and the
+/// layer that actually draws it.
+private enum DayMapLayout {
+    /// Matches the list's horizontal content margins, so the parked map lines
+    /// up with the note cards.
+    static let horizontalMargin: CGFloat = 20
+    static let rowInsets = EdgeInsets(top: 72, leading: 0, bottom: 72, trailing: 0)
+
+    /// The map is square, inset like every other row.
+    static func side(inPageWidth width: CGFloat) -> CGFloat {
+        max(0, width - 2 * horizontalMargin)
     }
 }
 
-private extension View {
-    func dayScrollDepthTransition() -> some View {
-        modifier(DayScrollDepthTransition())
+/// Draws the day's map behind its list. The map starts in the flow at the top
+/// of the page, then sinks to the middle of the screen as the notes scroll,
+/// blurring as it goes, and parks there however far the list keeps running.
+///
+/// It lives outside the list because a list row would be recycled the moment it
+/// scrolled far enough out of sight, taking the parked map with it.
+private struct DayMapBackdrop<Map: View, Content: View>: View {
+    private let map: Map
+    private let content: Content
+
+    @State private var scroll = DayScrollSnapshot()
+
+    init(@ViewBuilder map: () -> Map, @ViewBuilder content: () -> Content) {
+        self.map = map()
+        self.content = content()
     }
+
+    var body: some View {
+        GeometryReader { page in
+            let side = DayMapLayout.side(inPageWidth: page.size.width)
+            // Where the list would have put it, and where it comes to rest.
+            let restTop = scroll.topInset + DayMapLayout.rowInsets.top
+            let parkedTop = page.size.height / 2 - side / 2
+            let drop = max(0, parkedTop - restTop)
+            let sunk = Self.ease(min(max(scroll.offset, 0) / max(drop, 160), 1))
+
+            ZStack(alignment: .top) {
+                map
+                    .frame(width: side, height: side)
+                    .scaleEffect(1 - 0.06 * sunk)
+                    .blur(radius: 28 * sunk)
+                    .opacity(1 - 0.25 * sunk)
+                    .offset(y: restTop + drop * sunk)
+                    // The notes own every touch once the list is on top of it.
+                    .allowsHitTesting(false)
+
+                content
+                    .onScrollGeometryChange(for: DayScrollSnapshot.self) { geometry in
+                        DayScrollSnapshot(
+                            offset: geometry.contentOffset.y + geometry.contentInsets.top,
+                            topInset: geometry.contentInsets.top
+                        )
+                    } action: { _, snapshot in
+                        scroll = snapshot
+                    }
+            }
+        }
+    }
+
+    /// Eases in and out, so the map neither jerks away from the top nor slams
+    /// into the middle.
+    nonisolated private static func ease(_ t: CGFloat) -> CGFloat {
+        t * t * (3 - 2 * t)
+    }
+}
+
+/// How far the day's list has scrolled, and where its content starts.
+private struct DayScrollSnapshot: Equatable {
+    var offset: CGFloat = 0
+    var topInset: CGFloat = 0
 }
 
 private struct DayPathBackdrop: View {
@@ -567,7 +689,8 @@ private struct DayPathBackdrop: View {
     private var mapInk: Color {
         switch theme {
         case .standard: Color(red: 0.78, green: 0.80, blue: 0.84)
-        case .legacy: .white
+        case .legacy: theme.ink
+        case .newspaper: theme.ink
         }
     }
 
@@ -575,83 +698,81 @@ private struct DayPathBackdrop: View {
         switch theme {
         case .standard: Color(red: 0.16, green: 0.16, blue: 0.18)
         case .legacy: .black
+        case .newspaper: Color(red: 0.91, green: 0.89, blue: 0.84)
         }
     }
 
     var body: some View {
         GeometryReader { proxy in
             ZStack {
-                mapBase
+                ZStack {
+                    mapBase
 
-                DayMapSnapshot(region: route.region)
-                    .saturation(0)
-                    .contrast(1.28)
-                    .colorMultiply(mapInk)
-                    .opacity(0.95)
+                    DayMapSnapshot(region: route.region)
+                        .saturation(0)
+                        .contrast(1.28)
+                        .colorMultiply(mapInk)
+                        .opacity(0.95)
 
-                mapBase.opacity(0.05)
+                    mapBase.opacity(0.05)
 
-                RouteSilhouette(coordinates: route.coordinates, region: route.region)
-                    .stroke(
-                        mapInk.opacity(0.58),
-                        style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round)
-                    )
-                    .blur(radius: 7)
+                    RouteSilhouette(coordinates: route.coordinates, region: route.region)
+                        .stroke(
+                            mapInk.opacity(0.58),
+                            style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round)
+                        )
+                        .blur(radius: 7)
 
-                RouteSilhouette(coordinates: route.coordinates, region: route.region)
-                    .stroke(
-                        mapInk.opacity(0.92),
-                        style: StrokeStyle(lineWidth: 2.25, lineCap: .round, lineJoin: .round)
-                    )
+                    RouteSilhouette(coordinates: route.coordinates, region: route.region)
+                        .stroke(
+                            mapInk.opacity(0.92),
+                            style: StrokeStyle(lineWidth: 2.25, lineCap: .round, lineJoin: .round)
+                        )
 
-                if let coordinate = route.coordinates.last {
-                    LocationMapDot(ink: mapInk, base: mapBase)
-                        .position(project(coordinate, in: proxy.size))
-                        .allowsHitTesting(false)
+                    if let coordinate = route.coordinates.last {
+                        LocationMapDot(ink: mapInk, base: mapBase)
+                            .position(project(coordinate, in: proxy.size))
+                            .allowsHitTesting(false)
+                    }
+                }
+                .mask { mapVignette(in: proxy.size) }
+
+                if AppSettings.shared.mapNoteIconsEnabled {
+                    ForEach(notesWithLocations) { note in
+                        if let coordinate = note.mapLocation?.coordinate,
+                           let index = notesWithLocations.firstIndex(where: { $0.id == note.id }) {
+                            let anchor = project(coordinate, in: proxy.size)
+                            let callout = perimeterPosition(at: index, in: proxy.size)
+
+                            Path { path in
+                                path.move(to: anchor)
+                                path.addLine(to: callout)
+                            }
+                            .stroke(mapInk.opacity(0.38), style: StrokeStyle(lineWidth: 0.8, lineCap: .round))
+                            .allowsHitTesting(false)
+                        }
+                    }
                 }
 
-                ForEach(notesWithLocations) { note in
-                    if let coordinate = note.mapLocation?.coordinate {
-                        Button {
-                            onOpenNote(note)
-                        } label: {
-                            Image(systemName: note.mapSymbol ?? "note.text")
-                                .font(.wispr(13, weight: .semibold))
-                                .foregroundStyle(mapBase)
-                                .frame(width: 34, height: 34)
-                                .background(mapInk.opacity(0.94), in: Circle())
-                                .overlay {
-                                    Circle().stroke(mapBase.opacity(0.55), lineWidth: 1)
-                                }
-                                .shadow(color: mapInk.opacity(0.45), radius: 8)
+                Circle()
+                    .stroke(mapInk.opacity(0.08), lineWidth: 1)
+                    .blur(radius: 0.5)
+                    .allowsHitTesting(false)
+
+                if AppSettings.shared.mapNoteIconsEnabled {
+                    ForEach(notesWithLocations) { note in
+                        if let index = notesWithLocations.firstIndex(where: { $0.id == note.id }) {
+                            FloatingMapNoteButton(
+                                note: note,
+                                ink: mapInk,
+                                base: mapBase,
+                                onOpen: { onOpenNote(note) }
+                            )
+                            .position(perimeterPosition(at: index, in: proxy.size))
                         }
-                        .buttonStyle(.plain)
-                        .position(annotationPosition(for: note, at: coordinate, in: proxy.size))
-                        .accessibilityLabel("Open \(note.summaryLine)")
                     }
                 }
             }
-        }
-        .mask {
-            GeometryReader { proxy in
-                RadialGradient(
-                    stops: [
-                        .init(color: .white, location: 0),
-                        .init(color: .white, location: 0.68),
-                        .init(color: .white.opacity(0.55), location: 0.84),
-                        .init(color: .clear, location: 1)
-                    ],
-                    center: .center,
-                    startRadius: 0,
-                    endRadius: min(proxy.size.width, proxy.size.height) / 2
-                )
-            }
-        }
-        .overlay {
-            Circle()
-                .stroke(mapInk.opacity(0.08), lineWidth: 1)
-                .blur(radius: 0.5)
-                .allowsHitTesting(false)
         }
         .shadow(color: mapInk.opacity(0.12), radius: 18)
         .task(id: routeRequestID) {
@@ -682,20 +803,28 @@ private struct DayPathBackdrop: View {
         )
     }
 
-    private func annotationPosition(
-        for note: Note,
-        at coordinate: CLLocationCoordinate2D,
-        in size: CGSize
-    ) -> CGPoint {
-        let base = project(coordinate, in: size)
-        guard let index = notesWithLocations.firstIndex(where: { $0.id == note.id }), index > 0 else {
-            return base
-        }
-        let angle = Double(index) * 2.399_963
-        let radius = CGFloat(20 + min(index, 3) * 6)
+    private func perimeterPosition(at index: Int, in size: CGSize) -> CGPoint {
+        let count = max(notesWithLocations.count, 1)
+        let angle = -Double.pi / 2 + (2 * Double.pi * Double(index) / Double(count))
+        let radius = max(0, min(size.width, size.height) / 2 - 21)
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
         return CGPoint(
-            x: base.x + cos(angle) * radius,
-            y: base.y + sin(angle) * radius
+            x: center.x + cos(angle) * radius,
+            y: center.y + sin(angle) * radius
+        )
+    }
+
+    private func mapVignette(in size: CGSize) -> some View {
+        RadialGradient(
+            stops: [
+                .init(color: Color.wisprInk, location: 0),
+                .init(color: Color.wisprInk, location: 0.68),
+                .init(color: Color.wisprInk.opacity(0.55), location: 0.84),
+                .init(color: .clear, location: 1)
+            ],
+            center: .center,
+            startRadius: 0,
+            endRadius: min(size.width, size.height) / 2
         )
     }
 
@@ -721,6 +850,53 @@ private struct DayPathBackdrop: View {
 
     private var notesWithLocations: [Note] {
         notes.filter { $0.mapLocation != nil }
+    }
+}
+
+private struct FloatingMapNoteButton: View {
+    let note: Note
+    let ink: Color
+    let base: Color
+    let onOpen: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isFloating = false
+
+    private var phase: Double {
+        Double(note.id.uuidString.unicodeScalars.reduce(0) { $0 + Int($1.value) } % 360)
+            * .pi / 180
+    }
+
+    private var drift: CGSize {
+        guard isFloating, !reduceMotion else { return .zero }
+        return CGSize(width: cos(phase) * 2.2, height: sin(phase) * 2.2)
+    }
+
+    private var duration: Double {
+        2.8 + Double(note.id.uuidString.unicodeScalars.reduce(0) { $0 + Int($1.value) } % 9) / 10
+    }
+
+    var body: some View {
+        Button(action: onOpen) {
+            Image(systemName: note.mapSymbol ?? "note.text")
+                .font(.wispr(13, weight: .semibold))
+                .foregroundStyle(base)
+                .frame(width: 36, height: 36)
+                .background(ink.opacity(0.94), in: Circle())
+                .overlay {
+                    Circle().stroke(base.opacity(0.55), lineWidth: 1)
+                }
+                .shadow(color: ink.opacity(0.45), radius: 8)
+        }
+        .buttonStyle(.plain)
+        .offset(drift)
+        .accessibilityLabel("Open \(note.summaryLine)")
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: duration).repeatForever(autoreverses: true)) {
+                isFloating = true
+            }
+        }
     }
 }
 
@@ -1023,10 +1199,15 @@ struct NoteCard: View {
     var transcribingIDs: Set<UUID> = []
     var transcriptionErrors: [UUID: String] = [:]
 
+    @Environment(TimelineStore.self) private var timelines
+
+    /// The timeline the note is filed under, which the card wears.
+    private var timeline: NoteTimeline? { timelines.timeline(note.timelineID) }
+
     private var numbers: [UUID: Int] { NoteMarkup.numbers(for: note.blocks) }
     private var hasText: Bool { note.blocks.contains { !$0.isBlank } }
     private var hasBody: Bool {
-        hasText || !note.documentAttachments.isEmpty || note.schedule != nil
+        note.title != nil || hasText || !note.documentAttachments.isEmpty || note.schedule != nil
     }
 
     var body: some View {
@@ -1054,7 +1235,22 @@ struct NoteCard: View {
             footer
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // Inside the card's clip, so the wash follows its corners and sits
+        // under the glass rather than over the note.
+        .background {
+            if let timeline {
+                timeline.tint.fill.opacity(0.38)
+            }
+        }
         .wisprGlassCard()
+        // The timeline's mark in the corner, clear of the text beside it.
+        .overlay(alignment: .topTrailing) {
+            if let timeline {
+                TimelineMark(timeline: timeline, size: 22)
+                    .padding(8)
+                    .allowsHitTesting(false)
+            }
+        }
         // Sits above the rows so a tap selects the note rather than editing it.
         .overlay {
             if isSelecting {
@@ -1067,6 +1263,13 @@ struct NoteCard: View {
     /// comfortable area to tap into editing, especially under pictures.
     private func body(of note: Note) -> some View {
         VStack(alignment: .leading, spacing: 10) {
+            if let title = note.title {
+                NoteCardTitle(title: title, onEdit: onEdit)
+                    // Leaves the corner to the badge, so a long heading wraps
+                    // before it reaches it.
+                    .padding(.trailing, timeline == nil || !note.mediaAttachments.isEmpty ? 0 : 26)
+            }
+
             // The time leads the note, the way a heading would.
             if let schedule = note.schedule {
                 NoteScheduleLabel(schedule: schedule, day: day)
@@ -1083,10 +1286,10 @@ struct NoteCard: View {
             }
 
             if !note.blocks.isEmpty {
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: NoteTextMetrics.blockSpacing) {
                     ForEach(note.blocks) { block in
                         row(for: block)
-                            .padding(.leading, CGFloat(block.indent) * 18)
+                            .padding(.leading, CGFloat(block.indent) * NoteTextMetrics.indentWidth)
                     }
                 }
             }
@@ -1111,7 +1314,7 @@ struct NoteCard: View {
             }
         }
             .font(.wispr(11).italic())
-            .foregroundStyle(Color.white.opacity(0.35))
+            .foregroundStyle(Color.wisprInk.opacity(0.35))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 14)
             .padding(.top, footerTopPadding)
@@ -1145,12 +1348,12 @@ struct NoteCard: View {
     private var selectionLayer: some View {
         ZStack(alignment: .topTrailing) {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(isSelected ? Color.white.opacity(0.08) : .clear)
-                .strokeBorder(isSelected ? Color.white.opacity(0.5) : Color.wisprSeparator, lineWidth: 1.5)
+                .fill(isSelected ? Color.wisprInk.opacity(0.08) : .clear)
+                .strokeBorder(isSelected ? Color.wisprInk.opacity(0.5) : Color.wisprSeparator, lineWidth: 1.5)
 
             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                 .font(.wispr(20))
-                .foregroundStyle(isSelected ? .white : Color.white.opacity(0.45))
+                .foregroundStyle(isSelected ? Color.wisprInk : Color.wisprInk.opacity(0.45))
                 .padding(10)
         }
         .contentShape(Rectangle())
@@ -1186,8 +1389,8 @@ struct NoteCard: View {
     private func markedRow(_ block: NoteBlock, marker: Text) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             marker
-                .font(.wispr(17, role: .note))
-                .foregroundStyle(Color.white.opacity(0.6))
+                .font(.wispr(NoteTextMetrics.bodySize, role: .note))
+                .foregroundStyle(Color.wisprInk.opacity(0.6))
                 .frame(minWidth: 14, alignment: .leading)
 
             blockText(block)
@@ -1200,8 +1403,24 @@ struct NoteCard: View {
 
     private func blockText(_ block: NoteBlock) -> some View {
         Text(block.text)
-            .font(.wispr(17, role: .note))
-            .foregroundStyle(.white)
+            .font(.wispr(NoteTextMetrics.bodySize, role: .note))
+            .lineSpacing(NoteTextMetrics.lineSpacing)
+            .foregroundStyle(Color.wisprInk)
+    }
+}
+
+private struct NoteCardTitle: View {
+    let title: String
+    let onEdit: () -> Void
+
+    var body: some View {
+        Text(title)
+            .font(.wispr(NoteTextMetrics.titleSize, weight: .semibold, role: .note))
+            .foregroundStyle(Color.wisprInk)
+            .lineSpacing(NoteTextMetrics.lineSpacing)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onEdit)
     }
 }
 
@@ -1292,7 +1511,7 @@ private struct MediaMosaic: View {
                             Color.black.opacity(0.45)
                             Text("+\(remainder)")
                                 .font(.wispr(22, weight: .semibold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(Color.wisprInk)
                         }
                     }
                 }
@@ -1313,17 +1532,17 @@ private struct ChecklistItemRow: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
-                    .font(.wispr(17, role: .note))
-                    .foregroundStyle(isChecked ? Color.white.opacity(0.45) : Color.white.opacity(0.7))
+            HStack(alignment: .top, spacing: NoteTextMetrics.checklistSpacing) {
+                ChecklistMark(isChecked: isChecked)
+                    .padding(.top, 1)
 
                 Text(block.text)
-                    .font(.wispr(17, role: .note))
-                    .strikethrough(isChecked, color: Color.white.opacity(0.45))
-                    .foregroundStyle(isChecked ? Color.white.opacity(0.4) : .white)
-
-                Spacer(minLength: 0)
+                    .font(.wispr(NoteTextMetrics.bodySize, role: .note))
+                    .lineSpacing(NoteTextMetrics.lineSpacing)
+                    .strikethrough(isChecked, color: Color.wisprInk.opacity(0.45))
+                    .foregroundStyle(isChecked ? Color.wisprInk.opacity(0.4) : Color.wisprInk)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .contentShape(Rectangle())
             .onTapGesture(perform: onToggle)
@@ -1335,6 +1554,37 @@ private struct ChecklistItemRow: View {
                 .accessibilityLabel("Edit note")
                 .accessibilityAddTraits(.isButton)
         }
+        .padding(.vertical, NoteTextMetrics.checklistVerticalPadding)
+    }
+}
+
+private struct ChecklistMark: View {
+    let isChecked: Bool
+
+    private var theme: WisprThemeKind { AppSettings.shared.theme }
+    private var scale: CGFloat { AppSettings.shared.textSize(for: .note).scale }
+
+    var body: some View {
+        ZStack {
+            if theme == .legacy {
+                Rectangle()
+                    .stroke(Color.wisprInk.opacity(isChecked ? 0.5 : 0.72), lineWidth: 1.5)
+            } else {
+                Circle()
+                    .stroke(Color.wisprInk.opacity(isChecked ? 0.5 : 0.72), lineWidth: 1.5)
+            }
+
+            if isChecked {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 12 * scale, weight: .bold))
+                    .foregroundStyle(Color.wisprInk.opacity(0.68))
+            }
+        }
+        .frame(
+            width: NoteTextMetrics.checklistMarkSize * scale,
+            height: NoteTextMetrics.checklistMarkSize * scale
+        )
+        .accessibilityHidden(true)
     }
 }
 
@@ -1425,6 +1675,7 @@ extension NoteStore {
     return DayView()
         .environment(NoteStore.previewSeeded())
         .environment(LocationHistory())
+        .environment(TimelineStore.previewSeeded())
         .preferredColorScheme(.dark)
 }
 
@@ -1441,6 +1692,7 @@ extension NoteStore {
     return DayView()
         .environment(store)
         .environment(LocationHistory())
+        .environment(TimelineStore.previewSeeded())
         .preferredColorScheme(.dark)
 }
 
@@ -1463,6 +1715,7 @@ extension NoteStore {
     return DayView()
         .environment(store)
         .environment(LocationHistory())
+        .environment(TimelineStore.previewSeeded())
         .preferredColorScheme(.dark)
 }
 
@@ -1472,6 +1725,7 @@ extension NoteStore {
     return DayView()
         .environment(NoteStore.previewSeeded())
         .environment(LocationHistory())
+        .environment(TimelineStore.previewSeeded())
         .preferredColorScheme(.dark)
 }
 #endif
