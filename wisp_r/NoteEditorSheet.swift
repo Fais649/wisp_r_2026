@@ -17,6 +17,7 @@ struct NoteEditorSheet: View {
 
     let note: Note
     let day: Date
+    let capturesCreationLocation: Bool
     let onCommit: (Note) -> Void
     /// Called after the note has been saved when the calendar button was used
     /// to send it to another day.
@@ -55,15 +56,18 @@ struct NoteEditorSheet: View {
 
     @FocusState private var isEditorFocused: Bool
     @Environment(\.dismiss) private var dismiss
+    @Environment(LocationHistory.self) private var locationHistory
 
     init(
         note: Note,
         day: Date,
+        capturesCreationLocation: Bool = false,
         onCommit: @escaping (Note) -> Void,
         onMove: @escaping (Date) -> Void = { _ in }
     ) {
         self.note = note
         self.day = day
+        self.capturesCreationLocation = capturesCreationLocation
         self.onCommit = onCommit
         self.onMove = onMove
         _text = State(initialValue: NoteMarkup.text(from: note.blocks))
@@ -135,6 +139,11 @@ struct NoteEditorSheet: View {
         // Also saves when the sheet is swiped away rather than dismissed.
         .onDisappear(perform: save)
         .onAppear { isEditorFocused = true }
+        .task {
+            if capturesCreationLocation {
+                locationHistory.requestLocationForNewNote()
+            }
+        }
         .photosPicker(
             isPresented: $isShowingPhotoPicker,
             selection: $photoSelection,
@@ -521,6 +530,9 @@ struct NoteEditorSheet: View {
         updated.blocks = NoteMarkup.blocks(from: text)
         updated.attachments = attachments
         updated.schedule = schedule
+        if capturesCreationLocation, updated.location == nil {
+            updated.location = locationHistory.locationForNewNote()
+        }
         onCommit(updated)
 
         let target = destination ?? scheduleDay

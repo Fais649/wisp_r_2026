@@ -271,7 +271,7 @@ struct SettingsView: View {
 
         switch locationHistory.authorizationStatus {
         case .authorizedAlways:
-            return "Recording a sparse trail throughout the day. Pull down on a day to reveal its map."
+            return "Recording a low-power trail when your location changes significantly."
         case .authorizedWhenInUse:
             return "Allow Always Location in system Settings to complete trails while Wispr is in the background."
         case .denied, .restricted:

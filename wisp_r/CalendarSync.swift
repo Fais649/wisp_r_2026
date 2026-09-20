@@ -1,3 +1,4 @@
+import CoreLocation
 import EventKit
 import Foundation
 
@@ -152,7 +153,7 @@ final class CalendarSync {
         let title = note.calendarTitle
         if let id = note.calendarEventID,
            let event = findEvent(id: id, occurrence: note.calendarOccurrence) {
-            if matches(event, title: title, interval: interval) {
+            if matches(event, title: title, interval: interval, location: schedule.eventLocation) {
                 if note.calendarRevision == nil {
                     stamp(event, on: note.id, title: title, schedule: schedule, store: store)
                 }
@@ -164,7 +165,14 @@ final class CalendarSync {
                modified.timeIntervalSince(revision) > 1 {
                 return
             }
-            write(interval, title: title, to: event)
+            write(
+                interval,
+                title: title,
+                location: schedule.eventLocation,
+                latitude: schedule.eventLatitude,
+                longitude: schedule.eventLongitude,
+                to: event
+            )
             guard save(event) else { return }
             stamp(event, on: note.id, title: title, schedule: schedule, store: store)
             return
@@ -177,7 +185,14 @@ final class CalendarSync {
         guard let calendar = syncCalendar else { return }
         let event = EKEvent(eventStore: eventStore)
         event.calendar = calendar
-        write(interval, title: title, to: event)
+        write(
+            interval,
+            title: title,
+            location: schedule.eventLocation,
+            latitude: schedule.eventLatitude,
+            longitude: schedule.eventLongitude,
+            to: event
+        )
         guard save(event) else { return }
         if !stamp(event, on: note.id, title: title, schedule: schedule, store: store),
            let id = event.eventIdentifier {
@@ -206,8 +221,23 @@ final class CalendarSync {
         )
     }
 
-    private func write(_ interval: NoteSchedule.CalendarInterval, title: String, to event: EKEvent) {
+    private func write(
+        _ interval: NoteSchedule.CalendarInterval,
+        title: String,
+        location: String?,
+        latitude: Double?,
+        longitude: Double?,
+        to event: EKEvent
+    ) {
         event.title = title
+        event.location = normalizedLocation(location)
+        if let latitude, let longitude, location != nil {
+            let structured = EKStructuredLocation(title: location ?? "")
+            structured.geoLocation = CLLocation(latitude: latitude, longitude: longitude)
+            event.structuredLocation = structured
+        } else {
+            event.structuredLocation = nil
+        }
         event.isAllDay = interval.isAllDay
         event.startDate = interval.start
         event.endDate = interval.end
@@ -370,9 +400,13 @@ final class CalendarSync {
     private func matches(
         _ event: EKEvent,
         title: String,
-        interval: NoteSchedule.CalendarInterval
+        interval: NoteSchedule.CalendarInterval,
+        location: String?
     ) -> Bool {
-        guard normalizedTitle(event.title) == title, event.isAllDay == interval.isAllDay else { return false }
+        guard normalizedTitle(event.title) == title,
+              normalizedLocation(event.location) == normalizedLocation(location),
+              event.isAllDay == interval.isAllDay
+        else { return false }
         guard let start = event.startDate, let end = event.endDate else { return false }
         if interval.isAllDay {
             return sameAllDay(start, interval.start) && sameAllDay(end, interval.end)
@@ -401,7 +435,17 @@ final class CalendarSync {
             let endDay = NoteSchedule.localDay(fromAllDayBoundary: endDate)
             let last = calendar.date(byAdding: .day, value: -1, to: endDay) ?? startDay
             let offset = max(0, calendar.dateComponents([.day], from: startDay, to: last).day ?? 0)
-            return (startDay, NoteSchedule(startMinute: 0, endDayOffset: offset, isAllDay: true))
+            return (
+                startDay,
+                NoteSchedule(
+                    startMinute: 0,
+                    endDayOffset: offset,
+                    isAllDay: true,
+                    eventLocation: event.location,
+                    eventLatitude: event.structuredLocation?.geoLocation?.coordinate.latitude,
+                    eventLongitude: event.structuredLocation?.geoLocation?.coordinate.longitude
+                )
+            )
         }
 
         let startDay = calendar.startOfDay(for: startDate)
@@ -418,7 +462,14 @@ final class CalendarSync {
         }
         return (
             startDay,
-            NoteSchedule(startMinute: startMinute, endMinute: endMinute, endDayOffset: offset)
+            NoteSchedule(
+                startMinute: startMinute,
+                endMinute: endMinute,
+                endDayOffset: offset,
+                eventLocation: event.location,
+                eventLatitude: event.structuredLocation?.geoLocation?.coordinate.latitude,
+                eventLongitude: event.structuredLocation?.geoLocation?.coordinate.longitude
+            )
         )
     }
 
@@ -458,6 +509,11 @@ final class CalendarSync {
     private func normalizedTitle(_ title: String?) -> String {
         let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? "New Event" : trimmed
+    }
+
+    private func normalizedLocation(_ location: String?) -> String? {
+        let trimmed = location?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func linkKey(id: String, occurrence: Date?) -> String {

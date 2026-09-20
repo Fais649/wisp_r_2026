@@ -31,10 +31,6 @@ final class LocationHistory: NSObject, CLLocationManagerDelegate {
         super.init()
 
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        manager.distanceFilter = 40
-        manager.activityType = .otherNavigation
-        manager.pausesLocationUpdatesAutomatically = true
     }
 
     var isDenied: Bool {
@@ -43,6 +39,40 @@ final class LocationHistory: NSObject, CLLocationManagerDelegate {
 
     func samples(on day: Date) -> [LocationSample] {
         samplesByDay[dayKey(for: day), default: []]
+    }
+
+    /// Refreshes the coordinate used for a newly-created note with one bounded
+    /// request. This doesn't start continuous tracking.
+    func requestLocationForNewNote() {
+        guard AppSettings.shared.locationTrackingEnabled else { return }
+        guard authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse else { return }
+        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        manager.requestLocation()
+    }
+
+    /// The freshest trustworthy coordinate already available on the device.
+    func locationForNewNote(now: Date = .now) -> NoteLocation? {
+        guard AppSettings.shared.locationTrackingEnabled else { return nil }
+
+        if let location = manager.location,
+           location.horizontalAccuracy >= 0,
+           location.horizontalAccuracy <= 500,
+           abs(now.timeIntervalSince(location.timestamp)) <= 30 * 60 {
+            return NoteLocation(
+                latitude: location.coordinate.latitude,
+                longitude: location.coordinate.longitude,
+                capturedAt: location.timestamp
+            )
+        }
+
+        guard let sample = samples(on: now).last,
+              abs(now.timeIntervalSince(sample.timestamp)) <= 30 * 60
+        else { return nil }
+        return NoteLocation(
+            latitude: sample.latitude,
+            longitude: sample.longitude,
+            capturedAt: sample.timestamp
+        )
     }
 
     func setTrackingEnabled(_ enabled: Bool) {
@@ -111,20 +141,12 @@ final class LocationHistory: NSObject, CLLocationManagerDelegate {
     }
 
     private func startTracking() {
-        #if os(iOS)
-        manager.allowsBackgroundLocationUpdates = true
-        manager.showsBackgroundLocationIndicator = true
-        #endif
+        guard CLLocationManager.significantLocationChangeMonitoringAvailable() else { return }
         manager.startMonitoringSignificantLocationChanges()
-        manager.startUpdatingLocation()
     }
 
     private func stopTracking() {
-        manager.stopUpdatingLocation()
         manager.stopMonitoringSignificantLocationChanges()
-        #if os(iOS)
-        manager.allowsBackgroundLocationUpdates = false
-        #endif
     }
 
     private func append(_ location: CLLocation) {

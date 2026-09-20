@@ -34,8 +34,8 @@ struct DayView: View {
     private let today = Calendar.current.startOfDay(for: .now)
 
     @State private var visibleDayOffset: Int?
-    @State private var isMapFocused = false
     @State private var editingNote: Note?
+    @State private var isCreatingNote = false
     @State private var isSelecting = false
     @State private var selectedNoteIDs: Set<UUID> = []
     @State private var isShowingMoveSheet = false
@@ -83,7 +83,7 @@ struct DayView: View {
             }
         }
         .overlay(alignment: jumpButtonAlignment) {
-            if !isShowingToday, !isSelecting, !isMapFocused {
+            if !isShowingToday, !isSelecting {
                 jumpToTodayButton
             }
         }
@@ -106,6 +106,7 @@ struct DayView: View {
                 NoteEditorSheet(
                     note: note,
                     day: home,
+                    capturesCreationLocation: isCreatingNote,
                     onCommit: { edited in store.save(edited, on: home) },
                     onMove: { destination in move(note, from: home, to: destination) }
                 )
@@ -164,38 +165,55 @@ struct DayView: View {
 
     /// One day: its heading, its notes, and room underneath to tap.
     private func page(for pageDay: Date) -> some View {
-        DayLocationSurface(
-            samples: locationHistory.samples(on: pageDay),
-            isFocused: $isMapFocused
-        ) {
-            List {
-                header(for: pageDay)
-                    .listRowInsets(EdgeInsets(top: 10, leading: 0, bottom: 6, trailing: 0))
+        let samples = locationHistory.samples(on: pageDay)
+        let notes = store.notes(on: pageDay)
+        let hasMapContent = !samples.isEmpty || notes.contains { $0.mapLocation != nil }
+
+        return List {
+            if hasMapContent {
+                DayPathBackdrop(samples: samples, notes: notes) { note in
+                    isCreatingNote = false
+                    editingNote = note
+                }
+                    .aspectRatio(1, contentMode: .fit)
+                    .dayScrollDepthTransition()
+                    .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 12, trailing: 0))
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
+            }
 
-                ForEach(store.notes(on: pageDay)) { note in
-                    // No insets: the row is exactly the card, so a press and hold
-                    // lifts the card itself rather than a wider strip around it.
-                    noteRow(note, on: pageDay)
-                        .listRowInsets(EdgeInsets())
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
-                }
+            header(for: pageDay)
+                .dayScrollDepthTransition()
+                .listRowInsets(EdgeInsets(top: 10, leading: 0, bottom: 6, trailing: 0))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
 
-                newNoteArea
+            ForEach(notes) { note in
+                // No insets: the row is exactly the card, so a press and hold
+                // lifts the card itself rather than a wider strip around it.
+                noteRow(note, on: pageDay)
+                    .dayScrollDepthTransition()
                     .listRowInsets(EdgeInsets())
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
             }
-            .listStyle(.plain)
-            // Gaps between cards come from the list, and the side margins from the
-            // content insets, so neither ends up inside a row.
-            .listRowSpacing(12)
-            .contentMargins(.horizontal, 20, for: .scrollContent)
-            .scrollContentBackground(.hidden)
-            .scrollBounceBehavior(.always, axes: .vertical)
-            .environment(\.defaultMinListRowHeight, 0)
+
+            newNoteArea
+                .dayScrollDepthTransition()
+                .listRowInsets(EdgeInsets())
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+        }
+        .listStyle(.plain)
+        // Gaps between cards come from the list, and the side margins from the
+        // content insets, so neither ends up inside a row.
+        .listRowSpacing(12)
+        .contentMargins(.horizontal, 20, for: .scrollContent)
+        .scrollContentBackground(.hidden)
+        .scrollBounceBehavior(.always, axes: .vertical)
+        .environment(\.defaultMinListRowHeight, 0)
+        .task(id: pageDay) {
+            store.ensureMapSymbols(on: pageDay)
         }
     }
 
@@ -242,7 +260,10 @@ struct DayView: View {
                     store.toggleChecklistItem(block.id, inNote: note.id, on: pageDay)
                 }
             },
-            onEdit: { editingNote = note },
+            onEdit: {
+                isCreatingNote = false
+                editingNote = note
+            },
             onSelect: { toggleSelection(of: note) },
             onOpenAttachment: { openAttachment($0, in: note) },
             transcriptExpansion: { transcriptExpansion(for: $0) },
@@ -437,7 +458,11 @@ struct DayView: View {
 
     private func startNewNote() {
         guard !isSelecting else { return }
-        editingNote = Note(blocks: [NoteBlock()])
+        isCreatingNote = true
+        editingNote = Note(
+            blocks: [NoteBlock()],
+            location: locationHistory.locationForNewNote()
+        )
     }
 
     /// Pages back to today and opens a blank note there, whatever the day view
@@ -449,7 +474,11 @@ struct DayView: View {
             visibleDayOffset = 0
         }
 
-        editingNote = Note(blocks: [NoteBlock()])
+        isCreatingNote = true
+        editingNote = Note(
+            blocks: [NoteBlock()],
+            location: locationHistory.locationForNewNote()
+        )
     }
 
     // MARK: - Voice memos
@@ -495,131 +524,42 @@ struct DayView: View {
     }
 }
 
-// MARK: - Note card
+// MARK: - Day scrolling and map
 
-private struct DayLocationSurface<Content: View>: View {
-    let samples: [LocationSample]
-    @Binding var isFocused: Bool
-    @ViewBuilder let content: Content
-
-    @State private var pullDistance: CGFloat = 0
-    @State private var maximumPullDistance: CGFloat = 0
-
-    private var revealProgress: CGFloat {
-        isFocused ? 1 : min(max(pullDistance / 96, 0), 1)
-    }
-
-    var body: some View {
-        GeometryReader { proxy in
-            let focusedDiameter = min(proxy.size.width - 36, proxy.size.height * 0.62)
-            let restingDiameter = min(proxy.size.width - 72, 300)
-            let viewportDiameter = restingDiameter
-                + (focusedDiameter - restingDiameter) * revealProgress
-            let restingCenterY = restingDiameter * 0.42
-            let focusedCenterY = proxy.size.height * 0.46
-            let mapCenterY = restingCenterY
-                + (focusedCenterY - restingCenterY) * revealProgress
-
-            ZStack(alignment: .top) {
-                if !samples.isEmpty {
-                    DayPathBackdrop(
-                        samples: samples,
-                        revealProgress: revealProgress,
-                        viewportDiameter: viewportDiameter
-                    )
-                        .frame(width: focusedDiameter, height: focusedDiameter)
-                        .position(
-                            x: proxy.size.width / 2,
-                            y: mapCenterY
-                        )
-                        .accessibilityHidden(true)
-                }
-
-                content
-                    .scrollDisabled(isFocused)
-                    .offset(y: isFocused ? max(0, proxy.size.height - 92) : 0)
-                    .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                        max(0, geometry.contentInsets.top - geometry.contentOffset.y)
-                    } action: { _, newValue in
-                        pullDistance = newValue
-                        if !isFocused {
-                            maximumPullDistance = max(maximumPullDistance, newValue)
-                        }
-                    }
-                    .onScrollPhaseChange { oldPhase, newPhase in
-                        if newPhase == .interacting {
-                            maximumPullDistance = pullDistance
-                        }
-
-                        guard oldPhase == .interacting, newPhase != .interacting else { return }
-                        let shouldFocus = !isFocused
-                            && !samples.isEmpty
-                            && maximumPullDistance >= 96
-                        maximumPullDistance = 0
-
-                        if shouldFocus {
-                            withAnimation(.snappy) {
-                                isFocused = true
-                            }
-                        }
-                    }
-
-                if isFocused {
-                    FocusedMapDismissScroller {
-                        withAnimation(.snappy) {
-                            isFocused = false
-                            pullDistance = 0
-                        }
-                    }
-                }
-            }
+private struct DayScrollDepthTransition: ViewModifier {
+    func body(content: Content) -> some View {
+        content.scrollTransition(.interactive(timingCurve: .easeOut), axis: .vertical) { content, phase in
+            content
+                .blur(radius: 7 * max(0, -phase.value))
+                .opacity(1 - 0.45 * max(0, -phase.value))
+                .scaleEffect(1 - 0.035 * max(0, -phase.value), anchor: .bottom)
         }
-        .clipped()
-        .animation(.snappy, value: isFocused)
     }
 }
 
-private struct FocusedMapDismissScroller: View {
-    let onDismiss: () -> Void
-
-    @State private var passedDismissThreshold = false
-
-    var body: some View {
-        GeometryReader { proxy in
-            ScrollView(.vertical) {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .frame(maxWidth: .infinity)
-                    .frame(height: proxy.size.height + 96)
-            }
-            .scrollIndicators(.hidden)
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentOffset.y - geometry.contentInsets.top > 64
-            } action: { _, passedThreshold in
-                passedDismissThreshold = passedThreshold
-            }
-            .onScrollPhaseChange { oldPhase, newPhase in
-                guard oldPhase == .interacting, newPhase != .interacting else { return }
-                if passedDismissThreshold {
-                    onDismiss()
-                }
-            }
-        }
+private extension View {
+    func dayScrollDepthTransition() -> some View {
+        modifier(DayScrollDepthTransition())
     }
 }
 
 private struct DayPathBackdrop: View {
     let samples: [LocationSample]
-    let revealProgress: CGFloat
-    let viewportDiameter: CGFloat
+    let notes: [Note]
+    let onOpenNote: (Note) -> Void
 
     @State private var route: DayRouteGeometry
 
-    init(samples: [LocationSample], revealProgress: CGFloat, viewportDiameter: CGFloat) {
+    init(samples: [LocationSample], notes: [Note], onOpenNote: @escaping (Note) -> Void) {
         self.samples = samples
-        self.revealProgress = revealProgress
-        self.viewportDiameter = viewportDiameter
-        _route = State(initialValue: DayRouteGeometry(samples: samples))
+        self.notes = notes
+        self.onOpenNote = onOpenNote
+        _route = State(
+            initialValue: DayRouteGeometry(
+                samples: samples,
+                additionalCoordinates: notes.compactMap(\.mapLocation).map(\.coordinate)
+            )
+        )
     }
 
     private var theme: WisprThemeKind { AppSettings.shared.theme }
@@ -644,61 +584,89 @@ private struct DayPathBackdrop: View {
                 mapBase
 
                 DayMapSnapshot(region: route.region)
-                    .blur(radius: 4 * (1 - revealProgress), opaque: true)
                     .saturation(0)
-                    .contrast(1.1 + revealProgress * 0.18)
-                    .brightness(-0.05 + revealProgress * 0.05)
+                    .contrast(1.28)
                     .colorMultiply(mapInk)
-                    .opacity(0.72 + revealProgress * 0.23)
+                    .opacity(0.95)
 
-                mapBase.opacity(0.2 - revealProgress * 0.15)
+                mapBase.opacity(0.05)
 
                 RouteSilhouette(coordinates: route.coordinates, region: route.region)
                     .stroke(
-                        mapInk.opacity(0.24 + revealProgress * 0.34),
+                        mapInk.opacity(0.58),
                         style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round)
                     )
                     .blur(radius: 7)
 
                 RouteSilhouette(coordinates: route.coordinates, region: route.region)
                     .stroke(
-                        mapInk.opacity(0.42 + revealProgress * 0.5),
+                        mapInk.opacity(0.92),
                         style: StrokeStyle(lineWidth: 2.25, lineCap: .round, lineJoin: .round)
                     )
-                    .blur(radius: 5 * (1 - revealProgress))
 
                 if let coordinate = route.coordinates.last {
                     LocationMapDot(ink: mapInk, base: mapBase)
-                        .blur(radius: 5 * (1 - revealProgress))
                         .position(project(coordinate, in: proxy.size))
                         .allowsHitTesting(false)
+                }
+
+                ForEach(notesWithLocations) { note in
+                    if let coordinate = note.mapLocation?.coordinate {
+                        Button {
+                            onOpenNote(note)
+                        } label: {
+                            Image(systemName: note.mapSymbol ?? "note.text")
+                                .font(.wispr(13, weight: .semibold))
+                                .foregroundStyle(mapBase)
+                                .frame(width: 34, height: 34)
+                                .background(mapInk.opacity(0.94), in: Circle())
+                                .overlay {
+                                    Circle().stroke(mapBase.opacity(0.55), lineWidth: 1)
+                                }
+                                .shadow(color: mapInk.opacity(0.45), radius: 8)
+                        }
+                        .buttonStyle(.plain)
+                        .position(annotationPosition(for: note, at: coordinate, in: proxy.size))
+                        .accessibilityLabel("Open \(note.summaryLine)")
+                    }
                 }
             }
         }
         .mask {
-            RadialGradient(
-                stops: [
-                    .init(color: .white, location: 0),
-                    .init(color: .white, location: 0.68),
-                    .init(color: .white.opacity(0.55), location: 0.84),
-                    .init(color: .clear, location: 1)
-                ],
-                center: .center,
-                startRadius: 0,
-                endRadius: viewportDiameter / 2
-            )
-            .frame(width: viewportDiameter, height: viewportDiameter)
+            GeometryReader { proxy in
+                RadialGradient(
+                    stops: [
+                        .init(color: .white, location: 0),
+                        .init(color: .white, location: 0.68),
+                        .init(color: .white.opacity(0.55), location: 0.84),
+                        .init(color: .clear, location: 1)
+                    ],
+                    center: .center,
+                    startRadius: 0,
+                    endRadius: min(proxy.size.width, proxy.size.height) / 2
+                )
+            }
         }
         .overlay {
             Circle()
                 .stroke(mapInk.opacity(0.08), lineWidth: 1)
                 .blur(radius: 0.5)
-                .frame(width: viewportDiameter, height: viewportDiameter)
+                .allowsHitTesting(false)
         }
-        .shadow(color: mapInk.opacity(0.12 * revealProgress), radius: 18)
-        .allowsHitTesting(false)
-        .onChange(of: samples) { _, newSamples in
-            route = DayRouteGeometry(samples: newSamples)
+        .shadow(color: mapInk.opacity(0.12), radius: 18)
+        .task(id: routeRequestID) {
+            if let cached = DayRouteCache.shared.route(for: routeRequestID) {
+                route = cached
+                return
+            }
+
+            let resolved = await DayRouteGeometry.roadAligned(
+                samples: samples,
+                additionalCoordinates: notesWithLocations.compactMap(\.mapLocation).map(\.coordinate)
+            )
+            guard !Task.isCancelled else { return }
+            DayRouteCache.shared.insert(resolved, for: routeRequestID)
+            route = resolved
         }
     }
 
@@ -713,17 +681,71 @@ private struct DayPathBackdrop: View {
             y: (1 - (coordinate.latitude - minimumLatitude) / latitudeDelta) * size.height
         )
     }
+
+    private func annotationPosition(
+        for note: Note,
+        at coordinate: CLLocationCoordinate2D,
+        in size: CGSize
+    ) -> CGPoint {
+        let base = project(coordinate, in: size)
+        guard let index = notesWithLocations.firstIndex(where: { $0.id == note.id }), index > 0 else {
+            return base
+        }
+        let angle = Double(index) * 2.399_963
+        let radius = CGFloat(20 + min(index, 3) * 6)
+        return CGPoint(
+            x: base.x + cos(angle) * radius,
+            y: base.y + sin(angle) * radius
+        )
+    }
+
+    private var routeRequestID: String {
+        var components = [String(samples.count)]
+        if let first = samples.first, let last = samples.last {
+            components.append(contentsOf: [
+                first.latitude.formatted(.number.precision(.fractionLength(5))),
+                first.longitude.formatted(.number.precision(.fractionLength(5))),
+                last.latitude.formatted(.number.precision(.fractionLength(5))),
+                last.longitude.formatted(.number.precision(.fractionLength(5))),
+                last.timestamp.timeIntervalSinceReferenceDate.formatted(.number.precision(.fractionLength(0)))
+            ])
+        }
+        for note in notesWithLocations {
+            guard let location = note.mapLocation else { continue }
+            components.append(note.id.uuidString)
+            components.append(location.latitude.formatted(.number.precision(.fractionLength(5))))
+            components.append(location.longitude.formatted(.number.precision(.fractionLength(5))))
+        }
+        return components.joined(separator: ":")
+    }
+
+    private var notesWithLocations: [Note] {
+        notes.filter { $0.mapLocation != nil }
+    }
 }
+
+// MARK: - Map rendering
 
 private struct DayRouteGeometry {
     let coordinates: [CLLocationCoordinate2D]
     let region: MKCoordinateRegion
 
-    init(samples: [LocationSample]) {
-        coordinates = samples.map(\.coordinate)
+    init(samples: [LocationSample], additionalCoordinates: [CLLocationCoordinate2D] = []) {
+        self.init(
+            coordinates: samples.map(\.coordinate),
+            additionalCoordinates: additionalCoordinates
+        )
+    }
 
-        let latitudes = samples.map(\.latitude)
-        let longitudes = samples.map(\.longitude)
+    init(
+        coordinates: [CLLocationCoordinate2D],
+        additionalCoordinates: [CLLocationCoordinate2D] = []
+    ) {
+        self.coordinates = coordinates
+
+        let framingCoordinates = coordinates + additionalCoordinates
+        let latitudes = framingCoordinates.map(\.latitude)
+        let longitudes = framingCoordinates.map(\.longitude)
         let minimumLatitude = latitudes.min() ?? 0
         let maximumLatitude = latitudes.max() ?? 0
         let minimumLongitude = longitudes.min() ?? 0
@@ -739,6 +761,91 @@ private struct DayRouteGeometry {
                 longitudeDelta: max((maximumLongitude - minimumLongitude) * 2.2, 0.012)
             )
         )
+    }
+
+    /// Significant-change monitoring deliberately leaves wide gaps. Ask
+    /// MapKit for road geometry only across those gaps; already-dense trails
+    /// keep their recorded shape and require no routing work.
+    static func roadAligned(
+        samples: [LocationSample],
+        additionalCoordinates: [CLLocationCoordinate2D]
+    ) async -> DayRouteGeometry {
+        guard let first = samples.first else {
+            return DayRouteGeometry(samples: samples, additionalCoordinates: additionalCoordinates)
+        }
+
+        var coordinates = [first.coordinate]
+        var routingRequests = 0
+
+        for (start, end) in zip(samples, samples.dropFirst()) {
+            guard !Task.isCancelled else { break }
+            let distance = CLLocation(latitude: start.latitude, longitude: start.longitude)
+                .distance(from: CLLocation(latitude: end.latitude, longitude: end.longitude))
+
+            if distance >= 2_000,
+               distance <= 350_000,
+               routingRequests < 8,
+               let roadCoordinates = await roadCoordinates(from: start.coordinate, to: end.coordinate) {
+                coordinates.append(contentsOf: roadCoordinates.dropFirst())
+                routingRequests += 1
+            } else {
+                coordinates.append(end.coordinate)
+            }
+        }
+
+        return DayRouteGeometry(
+            coordinates: coordinates,
+            additionalCoordinates: additionalCoordinates
+        )
+    }
+
+    private static func roadCoordinates(
+        from source: CLLocationCoordinate2D,
+        to destination: CLLocationCoordinate2D
+    ) async -> [CLLocationCoordinate2D]? {
+        let request = MKDirections.Request()
+        request.source = MKMapItem(
+            location: CLLocation(latitude: source.latitude, longitude: source.longitude),
+            address: nil
+        )
+        request.destination = MKMapItem(
+            location: CLLocation(latitude: destination.latitude, longitude: destination.longitude),
+            address: nil
+        )
+        request.transportType = .automobile
+        request.requestsAlternateRoutes = false
+
+        guard let polyline = try? await MKDirections(request: request).calculate().routes.first?.polyline else {
+            return nil
+        }
+        var coordinates = Array(
+            repeating: CLLocationCoordinate2D(),
+            count: polyline.pointCount
+        )
+        polyline.getCoordinates(&coordinates, range: NSRange(location: 0, length: polyline.pointCount))
+        return coordinates
+    }
+}
+
+@MainActor
+private final class DayRouteCache {
+    static let shared = DayRouteCache()
+
+    private var routes: [String: DayRouteGeometry] = [:]
+    private var order: [String] = []
+
+    func route(for key: String) -> DayRouteGeometry? {
+        routes[key]
+    }
+
+    func insert(_ route: DayRouteGeometry, for key: String) {
+        routes[key] = route
+        order.removeAll { $0 == key }
+        order.append(key)
+
+        if order.count > 12 {
+            routes.removeValue(forKey: order.removeFirst())
+        }
     }
 }
 
@@ -899,6 +1006,8 @@ private struct RouteSilhouette: Shape {
     }
 }
 
+// MARK: - Note card
+
 struct NoteCard: View {
     let note: Note
     /// The day the note sits on, so its time can be read against it.
@@ -993,7 +1102,14 @@ struct NoteCard: View {
     /// When the note was written, closing every card. It doubles as somewhere
     /// to tap into editing on a card that is nothing but pictures or a memo.
     private var footer: some View {
-        Text(createdCaption)
+        HStack(spacing: 6) {
+            Text(createdCaption)
+
+            if note.location != nil {
+                Image(systemName: "location.fill")
+                    .accessibilityLabel("Location attached")
+            }
+        }
             .font(.wispr(11).italic())
             .foregroundStyle(Color.white.opacity(0.35))
             .frame(maxWidth: .infinity, alignment: .leading)

@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import SwiftUI
 
@@ -51,14 +52,30 @@ struct NoteSchedule: Equatable, Codable {
     /// it starts and ends on the same day.
     var endDayOffset: Int
     var isAllDay: Bool
+    /// A human-readable place for calendar events. Due dates don't use it.
+    var eventLocation: String?
+    /// The resolved event destination used for its map annotation.
+    var eventLatitude: Double?
+    var eventLongitude: Double?
 
     var isEvent: Bool { isAllDay || endMinute != nil }
 
-    init(startMinute: Int, endMinute: Int? = nil, endDayOffset: Int = 0, isAllDay: Bool = false) {
+    init(
+        startMinute: Int,
+        endMinute: Int? = nil,
+        endDayOffset: Int = 0,
+        isAllDay: Bool = false,
+        eventLocation: String? = nil,
+        eventLatitude: Double? = nil,
+        eventLongitude: Double? = nil
+    ) {
         self.startMinute = startMinute
         self.endMinute = endMinute
         self.endDayOffset = max(0, endDayOffset)
         self.isAllDay = isAllDay
+        self.eventLocation = Self.normalizedLocation(eventLocation)
+        self.eventLatitude = eventLatitude
+        self.eventLongitude = eventLongitude
     }
 
     // MARK: Times on a day
@@ -192,7 +209,8 @@ struct NoteSchedule: Equatable, Codable {
     // Written by hand so notes saved before all-day and multi-day events existed
     // still decode.
     private enum CodingKeys: String, CodingKey {
-        case startMinute, endMinute, endDayOffset, isAllDay
+        case startMinute, endMinute, endDayOffset, isAllDay, eventLocation
+        case eventLatitude, eventLongitude
     }
 
     init(from decoder: any Decoder) throws {
@@ -201,6 +219,11 @@ struct NoteSchedule: Equatable, Codable {
         endMinute = try container.decodeIfPresent(Int.self, forKey: .endMinute)
         endDayOffset = try container.decodeIfPresent(Int.self, forKey: .endDayOffset) ?? 0
         isAllDay = try container.decodeIfPresent(Bool.self, forKey: .isAllDay) ?? false
+        eventLocation = Self.normalizedLocation(
+            try container.decodeIfPresent(String.self, forKey: .eventLocation)
+        )
+        eventLatitude = try container.decodeIfPresent(Double.self, forKey: .eventLatitude)
+        eventLongitude = try container.decodeIfPresent(Double.self, forKey: .eventLongitude)
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -209,6 +232,25 @@ struct NoteSchedule: Equatable, Codable {
         try container.encodeIfPresent(endMinute, forKey: .endMinute)
         if endDayOffset != 0 { try container.encode(endDayOffset, forKey: .endDayOffset) }
         if isAllDay { try container.encode(isAllDay, forKey: .isAllDay) }
+        try container.encodeIfPresent(eventLocation, forKey: .eventLocation)
+        try container.encodeIfPresent(eventLatitude, forKey: .eventLatitude)
+        try container.encodeIfPresent(eventLongitude, forKey: .eventLongitude)
+    }
+
+    private static func normalizedLocation(_ location: String?) -> String? {
+        let trimmed = location?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+/// The coordinate captured when a note is first written.
+struct NoteLocation: Equatable, Codable, Sendable {
+    let latitude: Double
+    let longitude: Double
+    let capturedAt: Date
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
 }
 
@@ -217,6 +259,9 @@ struct Note: Identifiable, Equatable {
     var id = UUID()
     var blocks: [NoteBlock] = []
     var attachments: [NoteAttachment] = []
+    var location: NoteLocation?
+    /// An SF Symbol selected on-device to represent this note on its day map.
+    var mapSymbol: String?
     /// Set once the note has been given a time; `nil` for a plain note.
     var schedule: NoteSchedule?
     /// The calendar event this note mirrors, when it is synced.
@@ -231,6 +276,19 @@ struct Note: Identifiable, Equatable {
     var mediaAttachments: [NoteAttachment] { attachments.filter(\.kind.isVisualMedia) }
     var documentAttachments: [NoteAttachment] { attachments.filter { $0.kind == .document } }
     var voiceMemos: [NoteAttachment] { attachments.filter { $0.kind == .audio } }
+
+    /// Planned event coordinates take precedence over where the note was written.
+    var mapLocation: NoteLocation? {
+        if let schedule, schedule.isEvent {
+            if let latitude = schedule.eventLatitude,
+               let longitude = schedule.eventLongitude {
+                return NoteLocation(latitude: latitude, longitude: longitude, capturedAt: createdAt)
+            }
+            // Don't imply an unresolved named destination is where the note was written.
+            if schedule.eventLocation != nil { return nil }
+        }
+        return location
+    }
 
     /// The note with blank lines dropped, as it should be stored.
     var trimmed: Note {
@@ -335,7 +393,7 @@ extension NoteBlock: Codable {
 // still decode.
 extension Note: Codable {
     private enum CodingKeys: String, CodingKey {
-        case id, blocks, attachments, schedule, createdAt
+        case id, blocks, attachments, location, mapSymbol, schedule, createdAt
         case calendarEventID, calendarOccurrence, calendarRevision
     }
 
@@ -344,6 +402,8 @@ extension Note: Codable {
         id = try container.decode(UUID.self, forKey: .id)
         blocks = try container.decode([NoteBlock].self, forKey: .blocks)
         attachments = try container.decodeIfPresent([NoteAttachment].self, forKey: .attachments) ?? []
+        location = try container.decodeIfPresent(NoteLocation.self, forKey: .location)
+        mapSymbol = try container.decodeIfPresent(String.self, forKey: .mapSymbol)
         schedule = try container.decodeIfPresent(NoteSchedule.self, forKey: .schedule)
         calendarEventID = try container.decodeIfPresent(String.self, forKey: .calendarEventID)
         calendarOccurrence = try container.decodeIfPresent(Date.self, forKey: .calendarOccurrence)
@@ -356,6 +416,8 @@ extension Note: Codable {
         try container.encode(id, forKey: .id)
         try container.encode(blocks, forKey: .blocks)
         try container.encode(attachments, forKey: .attachments)
+        try container.encodeIfPresent(location, forKey: .location)
+        try container.encodeIfPresent(mapSymbol, forKey: .mapSymbol)
         try container.encodeIfPresent(schedule, forKey: .schedule)
         try container.encodeIfPresent(calendarEventID, forKey: .calendarEventID)
         try container.encodeIfPresent(calendarOccurrence, forKey: .calendarOccurrence)
@@ -373,6 +435,7 @@ final class NoteStore {
 
     private let fileURL: URL?
     private let calendarSync = CalendarSync()
+    @ObservationIgnored private var symbolAssignments: Set<UUID> = []
     /// Set while applying a calendar refresh, so it isn't pushed straight back.
     private var isApplyingCalendar = false
 
@@ -449,6 +512,22 @@ final class NoteStore {
         return Self.date(forKey: key)
     }
 
+    /// Lazily backfills symbols for existing notes and repairs duplicates that
+    /// can arise when a note moves to a different day.
+    func ensureMapSymbols(on day: Date) {
+        var used = Set<String>()
+        for note in notes(on: day) {
+            if let symbol = note.mapSymbol, !used.contains(symbol) {
+                used.insert(symbol)
+                continue
+            }
+            guard symbolAssignments.insert(note.id).inserted else { continue }
+            Task { [weak self] in
+                await self?.assignMapSymbol(to: note.id, visibleOn: day)
+            }
+        }
+    }
+
     // MARK: Writing
 
     /// Inserts the note, replaces it wherever it already lives, or removes it when empty.
@@ -464,10 +543,32 @@ final class NoteStore {
         }
 
         if let located = locate(trimmed.id) {
+            if notesByDay[located.key]?[located.index].summaryLine != trimmed.summaryLine {
+                trimmed.mapSymbol = nil
+            }
             notesByDay[located.key]?[located.index] = trimmed
         } else {
             notesByDay[Self.key(for: day), default: []].append(trimmed)
         }
+        persist()
+        ensureMapSymbols(on: day)
+    }
+
+    private func assignMapSymbol(to noteID: UUID, visibleOn day: Date) async {
+        defer { symbolAssignments.remove(noteID) }
+        guard let note = notes(on: day).first(where: { $0.id == noteID }) else { return }
+
+        let used = Set(notes(on: day).compactMap { candidate in
+            candidate.id == noteID ? nil : candidate.mapSymbol
+        })
+        let symbol = await NoteSymbolAssigner.shared.symbol(
+            for: note.summaryLine,
+            noteID: note.id,
+            excluding: used
+        )
+
+        guard let located = locate(noteID) else { return }
+        notesByDay[located.key]?[located.index].mapSymbol = symbol
         persist()
     }
 

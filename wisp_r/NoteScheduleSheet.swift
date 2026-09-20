@@ -1,3 +1,4 @@
+import MapKit
 import SwiftUI
 
 /// Gives a note a time: either a span, which makes it a calendar event, or a
@@ -30,6 +31,8 @@ struct NoteScheduleSheet: View {
     @State private var start: Date
     @State private var end: Date
     @State private var due: Date
+    @State private var eventLocation: String
+    @State private var isResolvingLocation = false
     /// Set while snapping between all-day and timed, so that snap isn't also
     /// treated as the user dragging the start along.
     @State private var isAdjustingTimes = false
@@ -60,6 +63,7 @@ struct NoteScheduleSheet: View {
                 ? (schedule?.start(on: day) ?? Self.latestDue(on: day))
                 : Self.latestDue(on: day)
         )
+        _eventLocation = State(initialValue: schedule?.eventLocation ?? "")
     }
 
     var body: some View {
@@ -109,8 +113,11 @@ struct NoteScheduleSheet: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Set", action: confirm)
+                    Button("Set") {
+                        Task { await confirm() }
+                    }
                         .fontWeight(.semibold)
+                        .disabled(isResolvingLocation)
                 }
             }
         }
@@ -160,6 +167,9 @@ struct NoteScheduleSheet: View {
                 isAdjustingTimes = false
             }
 
+            locationRow
+                .wisprCardBackground()
+
             caption(durationCaption)
         }
     }
@@ -199,6 +209,31 @@ struct NoteScheduleSheet: View {
             .fill(Color.wisprSeparator)
             .frame(height: 1)
             .padding(.leading, 16)
+    }
+
+    private var locationRow: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "mappin.and.ellipse")
+                .foregroundStyle(Color.wisprSecondaryText)
+
+            TextField("Add location", text: $eventLocation)
+                .font(.wispr(17))
+                .foregroundStyle(.white)
+                .submitLabel(.done)
+
+            if !eventLocation.isEmpty {
+                Button {
+                    eventLocation = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(Color.wisprSecondaryText)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear event location")
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(minHeight: 52)
     }
 
     private func caption(_ text: String) -> some View {
@@ -305,8 +340,11 @@ struct NoteScheduleSheet: View {
 
     // MARK: - Saving
 
-    private func confirm() {
+    private func confirm() async {
         let calendar = Calendar.current
+        isResolvingLocation = true
+        let eventCoordinate = kind == .event ? await resolvedEventCoordinate() : nil
+        defer { isResolvingLocation = false }
 
         switch kind {
         case .event:
@@ -315,7 +353,14 @@ struct NoteScheduleSheet: View {
                 let last = calendar.startOfDay(for: max(end, start))
                 let offset = max(0, calendar.dateComponents([.day], from: startDay, to: last).day ?? 0)
                 onSave(
-                    NoteSchedule(startMinute: 0, endDayOffset: offset, isAllDay: true),
+                    NoteSchedule(
+                        startMinute: 0,
+                        endDayOffset: offset,
+                        isAllDay: true,
+                        eventLocation: eventLocation,
+                        eventLatitude: eventCoordinate?.latitude,
+                        eventLongitude: eventCoordinate?.longitude
+                    ),
                     startDay
                 )
             } else {
@@ -331,7 +376,14 @@ struct NoteScheduleSheet: View {
                     }
                 }
                 onSave(
-                    NoteSchedule(startMinute: startMinute, endMinute: endMinute, endDayOffset: offset),
+                    NoteSchedule(
+                        startMinute: startMinute,
+                        endMinute: endMinute,
+                        endDayOffset: offset,
+                        eventLocation: eventLocation,
+                        eventLatitude: eventCoordinate?.latitude,
+                        eventLongitude: eventCoordinate?.longitude
+                    ),
                     startDay
                 )
             }
@@ -343,6 +395,21 @@ struct NoteScheduleSheet: View {
 
         dismiss()
     }
+
+    private func resolvedEventCoordinate() async -> CLLocationCoordinate2D? {
+        let location = eventLocation.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !location.isEmpty else { return nil }
+
+        if location == note.schedule?.eventLocation,
+           let latitude = note.schedule?.eventLatitude,
+           let longitude = note.schedule?.eventLongitude {
+            return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        }
+
+        let request = MKLocalSearch.Request(naturalLanguageQuery: location)
+        guard let response = try? await MKLocalSearch(request: request).start() else { return nil }
+        return response.mapItems.first?.location.coordinate
+    }
 }
 
 // MARK: - Schedule label
@@ -353,12 +420,15 @@ struct NoteScheduleLabel: View {
     let day: Date
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: schedule.isEvent ? "calendar" : "clock")
-                .font(.wispr(12, weight: .medium))
-
-            Text(schedule.summary(on: day))
+        VStack(alignment: .leading, spacing: 3) {
+            Label(schedule.summary(on: day), systemImage: schedule.isEvent ? "calendar" : "clock")
                 .font(.wispr(13, weight: .medium))
+
+            if let location = schedule.eventLocation, schedule.isEvent {
+                Label(location, systemImage: "mappin")
+                    .font(.wispr(12, weight: .medium))
+                    .lineLimit(1)
+            }
         }
         .foregroundStyle(Color.white.opacity(0.75))
         .padding(.horizontal, 10)
