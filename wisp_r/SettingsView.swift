@@ -31,7 +31,7 @@ struct SettingsView: View {
                         .padding(.top, 34)
 
                     SettingsGroup {
-                        ForEach(Array(WisprThemeKind.allCases.enumerated()), id: \.element) { index, theme in
+                        ForEach(WisprThemeKind.allCases.enumerated(), id: \.element) { index, theme in
                             if index > 0 { SettingsDivider() }
                             themeRow(theme)
                         }
@@ -411,6 +411,7 @@ private struct SettingsDivider: View {
     }
 }
 
+#if DEBUG
 #Preview("Default theme") {
     AppSettings.preview()
 
@@ -432,3 +433,4 @@ private struct SettingsDivider: View {
     }
     .preferredColorScheme(.dark)
 }
+#endif

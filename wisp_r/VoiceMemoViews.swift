@@ -13,7 +13,7 @@ struct WaveformView: View {
             let barWidth = max((proxy.size.width - CGFloat(bars.count - 1) * 2) / CGFloat(bars.count), 1)
 
             HStack(alignment: .center, spacing: 2) {
-                ForEach(Array(bars.enumerated()), id: \.offset) { index, sample in
+                ForEach(bars.enumerated(), id: \.offset) { index, sample in
                     Capsule()
                         .fill(
                             Double(index) / Double(bars.count) <= progress
@@ -211,6 +211,7 @@ private struct TranscriptView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     @Previewable @State var expanded = false
 
@@ -265,3 +266,4 @@ private struct TranscriptView: View {
     .background(WisprBackground())
     .preferredColorScheme(.dark)
 }
+#endif

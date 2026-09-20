@@ -320,6 +320,7 @@ struct MomentTimelineView: View {
     }
 }
 
+#if DEBUG
 #Preview("Notes") {
     NavigationStack {
         MomentTimelineView(moment: .notes)
@@ -343,3 +344,4 @@ struct MomentTimelineView: View {
     }
     .preferredColorScheme(.dark)
 }
+#endif

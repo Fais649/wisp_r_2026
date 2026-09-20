@@ -20,8 +20,9 @@ final class LocationHistory: NSObject, CLLocationManagerDelegate {
 
     private let manager = CLLocationManager()
     private let calendar = Calendar.current
-    private let encoder = JSONEncoder()
     private let storageURL: URL
+    private let persistence = LocationHistoryPersistence()
+    @ObservationIgnored private var saveTask: Task<Void, Never>?
 
     override init() {
         authorizationStatus = manager.authorizationStatus
@@ -167,12 +168,16 @@ final class LocationHistory: NSObject, CLLocationManagerDelegate {
     }
 
     private func save() {
-        guard let data = try? encoder.encode(samplesByDay) else { return }
-        try? FileManager.default.createDirectory(
-            at: storageURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try? data.write(to: storageURL, options: .atomic)
+        let snapshot = samplesByDay
+        let storageURL = storageURL
+        let persistence = persistence
+
+        saveTask?.cancel()
+        saveTask = Task {
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            await persistence.save(snapshot, to: storageURL)
+        }
     }
 
     private static func makeStorageURL() -> URL {
@@ -193,4 +198,15 @@ final class LocationHistory: NSObject, CLLocationManagerDelegate {
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()
+}
+
+private actor LocationHistoryPersistence {
+    func save(_ samplesByDay: [String: [LocationSample]], to storageURL: URL) {
+        guard let data = try? JSONEncoder().encode(samplesByDay) else { return }
+        try? FileManager.default.createDirectory(
+            at: storageURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? data.write(to: storageURL, options: .atomic)
+    }
 }

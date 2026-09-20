@@ -95,7 +95,7 @@ struct MoveNotesSheet: View {
                     .padding(.vertical, 12)
             } else {
                 VStack(spacing: 0) {
-                    ForEach(Array(notesOnChosenDay.enumerated()), id: \.element.id) { index, note in
+                    ForEach(notesOnChosenDay.enumerated(), id: \.element.id) { index, note in
                         if index > 0 {
                             Rectangle()
                                 .fill(Color.wisprSeparator)
@@ -151,7 +151,9 @@ struct NoteSummaryRow: View {
     }
 }
 
+#if DEBUG
 #Preview {
     MoveNotesSheet(noteCount: 3, startingFrom: .now) { _ in }
         .environment(NoteStore.previewSeeded())
 }
+#endif

@@ -368,6 +368,7 @@ struct NoteScheduleLabel: View {
     }
 }
 
+#if DEBUG
 #Preview("New event") {
     NoteScheduleSheet(
         note: Note(blocks: [NoteBlock(text: "Dentist")]),
@@ -394,3 +395,4 @@ struct NoteScheduleLabel: View {
         day: .now
     ) { _, _ in }
 }
+#endif

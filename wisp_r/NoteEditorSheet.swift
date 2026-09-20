@@ -833,6 +833,7 @@ struct DocumentAttachmentRow: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NoteEditorSheet(
         note: Note(blocks: [
@@ -845,3 +846,4 @@ struct DocumentAttachmentRow: View {
     ) { _ in }
     .preferredColorScheme(.dark)
 }
+#endif

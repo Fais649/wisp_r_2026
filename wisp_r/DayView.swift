@@ -21,6 +21,7 @@ struct DayView: View {
 
     /// How many days either side of today can be paged to.
     private static let pageReach = 400
+    private static let dayOffsets = Array(-pageReach...pageReach)
 
     /// What the back button reads, so pushing the day view from somewhere other
     /// than the menu still names where it came from.
@@ -60,8 +61,6 @@ struct DayView: View {
         let offset = calendar.dateComponents([.day], from: today, to: target).day ?? 0
         _visibleDayOffset = State(initialValue: min(max(offset, -Self.pageReach), Self.pageReach))
     }
-
-    private var dayOffsets: [Int] { Array(-Self.pageReach...Self.pageReach) }
 
     /// The day currently paged into view.
     private var day: Date { date(atOffset: visibleDayOffset ?? 0) }
@@ -149,7 +148,7 @@ struct DayView: View {
     private var days: some View {
         ScrollView(.horizontal) {
             LazyHStack(spacing: 0) {
-                ForEach(dayOffsets, id: \.self) { offset in
+                ForEach(Self.dayOffsets, id: \.self) { offset in
                     page(for: date(atOffset: offset))
                         .containerRelativeFrame(.horizontal)
                 }
@@ -504,6 +503,7 @@ private struct DayLocationSurface<Content: View>: View {
     @ViewBuilder let content: Content
 
     @State private var pullDistance: CGFloat = 0
+    @State private var maximumPullDistance: CGFloat = 0
 
     private var revealProgress: CGFloat {
         isFocused ? 1 : min(max(pullDistance / 96, 0), 1)
@@ -542,32 +542,69 @@ private struct DayLocationSurface<Content: View>: View {
                         max(0, geometry.contentInsets.top - geometry.contentOffset.y)
                     } action: { _, newValue in
                         pullDistance = newValue
-                        guard !isFocused, !samples.isEmpty, newValue >= 96 else { return }
-                        withAnimation(.snappy) {
-                            isFocused = true
-                            pullDistance = 0
+                        if !isFocused {
+                            maximumPullDistance = max(maximumPullDistance, newValue)
                         }
                     }
-            }
-            .contentShape(Rectangle())
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 18)
-                    .onEnded { value in
-                        let movement = value.translation
-                        guard isFocused,
-                              movement.height < -64,
-                              abs(movement.height) > abs(movement.width) * 1.15
-                        else { return }
+                    .onScrollPhaseChange { oldPhase, newPhase in
+                        if newPhase == .interacting {
+                            maximumPullDistance = pullDistance
+                        }
 
+                        guard oldPhase == .interacting, newPhase != .interacting else { return }
+                        let shouldFocus = !isFocused
+                            && !samples.isEmpty
+                            && maximumPullDistance >= 96
+                        maximumPullDistance = 0
+
+                        if shouldFocus {
+                            withAnimation(.snappy) {
+                                isFocused = true
+                            }
+                        }
+                    }
+
+                if isFocused {
+                    FocusedMapDismissScroller {
                         withAnimation(.snappy) {
                             isFocused = false
                             pullDistance = 0
                         }
                     }
-            )
+                }
+            }
         }
         .clipped()
         .animation(.snappy, value: isFocused)
+    }
+}
+
+private struct FocusedMapDismissScroller: View {
+    let onDismiss: () -> Void
+
+    @State private var passedDismissThreshold = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            ScrollView(.vertical) {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .frame(maxWidth: .infinity)
+                    .frame(height: proxy.size.height + 96)
+            }
+            .scrollIndicators(.hidden)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y - geometry.contentInsets.top > 64
+            } action: { _, passedThreshold in
+                passedDismissThreshold = passedThreshold
+            }
+            .onScrollPhaseChange { oldPhase, newPhase in
+                guard oldPhase == .interacting, newPhase != .interacting else { return }
+                if passedDismissThreshold {
+                    onDismiss()
+                }
+            }
+        }
     }
 }
 
@@ -575,6 +612,15 @@ private struct DayPathBackdrop: View {
     let samples: [LocationSample]
     let revealProgress: CGFloat
     let viewportDiameter: CGFloat
+
+    @State private var route: DayRouteGeometry
+
+    init(samples: [LocationSample], revealProgress: CGFloat, viewportDiameter: CGFloat) {
+        self.samples = samples
+        self.revealProgress = revealProgress
+        self.viewportDiameter = viewportDiameter
+        _route = State(initialValue: DayRouteGeometry(samples: samples))
+    }
 
     private var theme: WisprThemeKind { AppSettings.shared.theme }
 
@@ -592,37 +638,13 @@ private struct DayPathBackdrop: View {
         }
     }
 
-    private var coordinates: [CLLocationCoordinate2D] {
-        samples.map(\.coordinate)
-    }
-
-    private var region: MKCoordinateRegion {
-        let latitudes = samples.map(\.latitude)
-        let longitudes = samples.map(\.longitude)
-        let minimumLatitude = latitudes.min() ?? 0
-        let maximumLatitude = latitudes.max() ?? 0
-        let minimumLongitude = longitudes.min() ?? 0
-        let maximumLongitude = longitudes.max() ?? 0
-
-        return MKCoordinateRegion(
-            center: CLLocationCoordinate2D(
-                latitude: (minimumLatitude + maximumLatitude) / 2,
-                longitude: (minimumLongitude + maximumLongitude) / 2
-            ),
-            span: MKCoordinateSpan(
-                latitudeDelta: max((maximumLatitude - minimumLatitude) * 2.2, 0.012),
-                longitudeDelta: max((maximumLongitude - minimumLongitude) * 2.2, 0.012)
-            )
-        )
-    }
-
     var body: some View {
         GeometryReader { proxy in
             ZStack {
                 mapBase
 
-                DayMapSnapshot(region: region)
-                    .blur(radius: 5 * (1 - revealProgress))
+                DayMapSnapshot(region: route.region)
+                    .blur(radius: 4 * (1 - revealProgress), opaque: true)
                     .saturation(0)
                     .contrast(1.1 + revealProgress * 0.18)
                     .brightness(-0.05 + revealProgress * 0.05)
@@ -631,21 +653,21 @@ private struct DayPathBackdrop: View {
 
                 mapBase.opacity(0.2 - revealProgress * 0.15)
 
-                RouteSilhouette(coordinates: coordinates, region: region)
+                RouteSilhouette(coordinates: route.coordinates, region: route.region)
                     .stroke(
                         mapInk.opacity(0.24 + revealProgress * 0.34),
                         style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round)
                     )
                     .blur(radius: 7)
 
-                RouteSilhouette(coordinates: coordinates, region: region)
+                RouteSilhouette(coordinates: route.coordinates, region: route.region)
                     .stroke(
                         mapInk.opacity(0.42 + revealProgress * 0.5),
                         style: StrokeStyle(lineWidth: 2.25, lineCap: .round, lineJoin: .round)
                     )
                     .blur(radius: 5 * (1 - revealProgress))
 
-                if let coordinate = coordinates.last {
+                if let coordinate = route.coordinates.last {
                     LocationMapDot(ink: mapInk, base: mapBase)
                         .blur(radius: 5 * (1 - revealProgress))
                         .position(project(coordinate, in: proxy.size))
@@ -675,17 +697,47 @@ private struct DayPathBackdrop: View {
         }
         .shadow(color: mapInk.opacity(0.12 * revealProgress), radius: 18)
         .allowsHitTesting(false)
+        .onChange(of: samples) { _, newSamples in
+            route = DayRouteGeometry(samples: newSamples)
+        }
     }
 
     private func project(_ coordinate: CLLocationCoordinate2D, in size: CGSize) -> CGPoint {
-        let latitudeDelta = max(region.span.latitudeDelta, 0.000_001)
-        let longitudeDelta = max(region.span.longitudeDelta, 0.000_001)
-        let minimumLatitude = region.center.latitude - latitudeDelta / 2
-        let minimumLongitude = region.center.longitude - longitudeDelta / 2
+        let latitudeDelta = max(route.region.span.latitudeDelta, 0.000_001)
+        let longitudeDelta = max(route.region.span.longitudeDelta, 0.000_001)
+        let minimumLatitude = route.region.center.latitude - latitudeDelta / 2
+        let minimumLongitude = route.region.center.longitude - longitudeDelta / 2
 
         return CGPoint(
             x: ((coordinate.longitude - minimumLongitude) / longitudeDelta) * size.width,
             y: (1 - (coordinate.latitude - minimumLatitude) / latitudeDelta) * size.height
+        )
+    }
+}
+
+private struct DayRouteGeometry {
+    let coordinates: [CLLocationCoordinate2D]
+    let region: MKCoordinateRegion
+
+    init(samples: [LocationSample]) {
+        coordinates = samples.map(\.coordinate)
+
+        let latitudes = samples.map(\.latitude)
+        let longitudes = samples.map(\.longitude)
+        let minimumLatitude = latitudes.min() ?? 0
+        let maximumLatitude = latitudes.max() ?? 0
+        let minimumLongitude = longitudes.min() ?? 0
+        let maximumLongitude = longitudes.max() ?? 0
+
+        region = MKCoordinateRegion(
+            center: CLLocationCoordinate2D(
+                latitude: (minimumLatitude + maximumLatitude) / 2,
+                longitude: (minimumLongitude + maximumLongitude) / 2
+            ),
+            span: MKCoordinateSpan(
+                latitudeDelta: max((maximumLatitude - minimumLatitude) * 2.2, 0.012),
+                longitudeDelta: max((maximumLongitude - minimumLongitude) * 2.2, 0.012)
+            )
         )
     }
 }
@@ -709,7 +761,14 @@ private struct DayMapSnapshot: View {
         }
         .clipped()
         .task(id: requestID) {
-            snapshot = await makeSnapshot()
+            if let cached = DayMapSnapshotCache.shared.snapshot(for: requestID) {
+                snapshot = cached
+                return
+            }
+
+            guard let rendered = await makeSnapshot(), !Task.isCancelled else { return }
+            DayMapSnapshotCache.shared.insert(rendered, for: requestID)
+            snapshot = rendered
         }
     }
 
@@ -753,11 +812,36 @@ private struct DayMapSnapshot: View {
         options.appearance = NSAppearance(named: .darkAqua)
         #endif
 
-        return await withCheckedContinuation { continuation in
-            MKMapSnapshotter(options: options).start { snapshot, _ in
-                continuation.resume(returning: snapshot)
+        let snapshotter = MKMapSnapshotter(options: options)
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                snapshotter.start { snapshot, _ in
+                    continuation.resume(returning: snapshot)
+                }
             }
+        } onCancel: {
+            snapshotter.cancel()
         }
+    }
+}
+
+@MainActor
+private final class DayMapSnapshotCache {
+    static let shared = DayMapSnapshotCache()
+
+    private let cache: NSCache<NSString, MKMapSnapshotter.Snapshot>
+
+    private init() {
+        cache = NSCache()
+        cache.countLimit = 12
+    }
+
+    func snapshot(for key: String) -> MKMapSnapshotter.Snapshot? {
+        cache.object(forKey: key as NSString)
+    }
+
+    func insert(_ snapshot: MKMapSnapshotter.Snapshot, for key: String) {
+        cache.setObject(snapshot, forKey: key as NSString)
     }
 }
 
@@ -1218,6 +1302,7 @@ extension NoteStore {
 }
 #endif
 
+#if DEBUG
 #Preview("Several notes") {
     AppSettings.preview()
 
@@ -1273,3 +1358,4 @@ extension NoteStore {
         .environment(LocationHistory())
         .preferredColorScheme(.dark)
 }
+#endif

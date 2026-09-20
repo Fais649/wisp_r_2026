@@ -292,6 +292,7 @@ struct FocusWidgetNoteIntent: AppIntent {
         self.noteID = noteID.uuidString
     }
 
+    @MainActor
     func perform() async throws -> some IntentResult {
         WidgetFocus.set(UUID(uuidString: noteID))
         return .result()
@@ -303,6 +304,7 @@ struct ShowWidgetTodayIntent: AppIntent {
     static let title: LocalizedStringResource = "Show Today in the Widget"
     static let isDiscoverable = false
 
+    @MainActor
     func perform() async throws -> some IntentResult {
         WidgetFocus.set(nil)
         return .result()
@@ -326,6 +328,7 @@ struct ToggleWidgetChecklistItemIntent: AppIntent {
         self.isChecked = isChecked
     }
 
+    @MainActor
     func perform() async throws -> some IntentResult {
         guard let note = UUID(uuidString: noteID), let block = UUID(uuidString: blockID) else {
             return .result()
@@ -668,7 +671,7 @@ private struct TodayNotesWidgetView: View {
         let overflow = max(0, entry.notes.count - shown.count)
 
         return VStack(spacing: 0) {
-            ForEach(Array(shown.enumerated()), id: \.element.id) { index, note in
+            ForEach(shown.enumerated(), id: \.element.id) { index, note in
                 if index > 0 {
                     Rectangle()
                         .fill(theme.separator)
@@ -794,7 +797,7 @@ private struct MonthCalendar: View {
     var body: some View {
         VStack(spacing: 6) {
             HStack(spacing: 0) {
-                ForEach(Array(weekdaySymbols.enumerated()), id: \.offset) { _, symbol in
+                ForEach(weekdaySymbols.enumerated(), id: \.offset) { _, symbol in
                     Text(symbol)
                         .font(theme.font(11, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.35))
@@ -802,9 +805,9 @@ private struct MonthCalendar: View {
                 }
             }
 
-            ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
+            ForEach(weeks.enumerated(), id: \.offset) { _, week in
                 HStack(spacing: 0) {
-                    ForEach(Array(week.enumerated()), id: \.offset) { _, day in
+                    ForEach(week.enumerated(), id: \.offset) { _, day in
                         cell(for: day)
                     }
                 }
@@ -902,6 +905,7 @@ struct WisprWidgetBundle: WidgetBundle {
     }
 }
 
+#if DEBUG
 #Preview("Mixed notes", as: .systemLarge) {
     TodayNotesWidget()
 } timeline: {
@@ -935,3 +939,4 @@ struct WisprWidgetBundle: WidgetBundle {
 } timeline: {
     TodayNotesEntry(date: .now, notes: [], theme: .legacy)
 }
+#endif

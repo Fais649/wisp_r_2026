@@ -272,6 +272,7 @@ private extension Color {
     static let timelineFunny = Color(red: 0.42, green: 0.23, blue: 0.27)
 }
 
+#if DEBUG
 #Preview {
     AppSettings.preview()
 
@@ -291,3 +292,4 @@ private extension Color {
         .environment(NoteStore(persistsToDisk: false))
         .environment(LocationHistory())
 }
+#endif

@@ -1,0 +1,13 @@
+{
+  "id" : "74ababc7-ce7f-4aa8-bf38-4bd5f226c67b",
+  "targets" : [
+    {
+      "id" : "468db3b4-c346-4eba-af4e-93fe94c2ff75",
+      "name" : "wisp_r"
+    },
+    {
+      "id" : "46F7DD56-F082-4857-86FA-0F7675112F8D",
+      "name" : "wispr"
+    }
+  ]
+}
